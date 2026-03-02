@@ -3,6 +3,18 @@
 session_set_cookie_params(['path' => '/']);
 session_start();
 
+set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    throw new ErrorException($errstr, 0, $errno, $errfile, $errline);
+});
+set_exception_handler(function($e) {
+    header('Content-Type: application/json');
+    echo json_encode(['success' => false, 'error' => '服务器错误: ' . $e->getMessage()]);
+    exit;
+});
+
+ini_set('display_errors', 0);
+error_reporting(E_ALL); // 仍然记录错误到日志，但不显示
+
 // 定义常量
 define('DATA_DIR', __DIR__ . '/data');
 define('USERS_FILE', DATA_DIR . '/users.json');
@@ -64,6 +76,17 @@ function decryptHash($encrypted) {
     $ciphertext = substr($data, $ivlen + 16);
     return openssl_decrypt($ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
 }
+
+//加密器错误时启用下面的代码，注释上面的代码
+
+// function encryptHash($hash) {
+    // return $hash; // 直接返回，不加密
+// }
+
+// function decryptHash($encrypted) {
+    // return $encrypted; // 直接返回，不解密
+// }
+
 // ======================================================
 
 // 处理API请求
@@ -830,29 +853,39 @@ html.dark-mode .moon-svg { display: none; }
             document.getElementById('registerBox').classList.remove('hidden');
         }
 
-        async function doRegister() {
-            const username = document.getElementById('regUsername').value.trim();
-            const password = document.getElementById('regPassword').value.trim();
-            if (!username || !password) {
-                alert('用户名和密码不能为空');
-                return;
-            }
-            const formData = new FormData();
-            formData.append('username', username);
-            formData.append('password', password);
-            const avatarFile = document.getElementById('regAvatar').files[0];
-            if (avatarFile) {
-                formData.append('avatar', avatarFile);
-            }
-            const res = await fetch('?action=register', { method: 'POST', body: formData });
-            const data = await res.json();
-            if (data.success) {
-                alert('注册成功，请登录');
-                showLogin();
-            } else {
-                alert('注册失败: ' + data.error);
-            }
+async function doRegister() {
+    try {
+        const username = document.getElementById('regUsername').value.trim();
+        const password = document.getElementById('regPassword').value.trim();
+        if (!username || !password) {
+            alert('用户名和密码不能为空');
+            return;
         }
+        const formData = new FormData();
+        formData.append('username', username);
+        formData.append('password', password);
+        const avatarFile = document.getElementById('regAvatar').files[0];
+        if (avatarFile) {
+            formData.append('avatar', avatarFile);
+        }
+
+        const res = await fetch('?action=register', { method: 'POST', body: formData });
+        if (!res.ok) {
+            throw new Error(`HTTP 错误 ${res.status} – ${res.statusText}`);
+        }
+
+        const data = await res.json();
+        if (data.success) {
+            alert('注册成功，请登录');
+            showLogin(); // 切换到登录界面
+        } else {
+            alert('注册失败: ' + (data.error || '未知错误'));
+        }
+    } catch (error) {
+        console.error('注册请求异常:', error);
+        alert('注册请求失败，请稍后重试。详细错误：' + error.message);
+    }
+}
 
         async function doLogin() {
             const usernameOrId = document.getElementById('loginUsername').value.trim();
@@ -1587,7 +1620,14 @@ function saveMessageToUser($userId, $friendId, $message) {
 
 function generateUserId() {
     do {
-        $id = strval(random_int(1000000000, 9999999999));
+        $id = '';
+        // 第一位不能为0（否则变成9位数）
+        $id .= random_int(1, 9);
+        // 拼接剩余的9位
+        for ($i = 0; $i < 9; $i++) {
+            $id .= random_int(0, 9);
+        }
+        // 确保生成的是10位数字字符串
     } while (getUserById($id) !== null);
     return $id;
 }
@@ -1601,6 +1641,7 @@ function safeUser($user) {
 
 // 处理注册
 function handleRegister() {
+    ob_clean(); // 清除之前的输出
     $username = $_POST['username'] ?? '';
     $password = $_POST['password'] ?? '';
     if (!$username || !$password) {
