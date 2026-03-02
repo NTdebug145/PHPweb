@@ -5,7 +5,7 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
     <title>NTC - wiki</title>
     <style>
         /* 原有样式保持不变，仅新增太阳/月亮的显示控制 */
@@ -339,6 +339,8 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
         .markdown-body table {
             border-collapse: collapse;
             width: 100%;
+            overflow-x: auto;
+            display: block;
         }
 
         .markdown-body th,
@@ -385,6 +387,117 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
             background: #332d1a;
             border-left-color: #ffb347;
             color: #ffd966;
+        }
+
+        /* ----------------- 响应式适配：手机 & 低分辨率设备 ----------------- */
+        @media (max-width: 768px) {
+            .content-area {
+                padding: 20px;
+            }
+            .markdown-body {
+                padding: 20px;
+            }
+            .sidebar {
+                width: 220px; /* 展开时略微收窄 */
+            }
+            .sidebar.collapsed {
+                width: 60px;
+            }
+            .icon-btn {
+                width: 28px;
+                height: 28px;
+                font-size: 22px;
+            }
+            .doc-item {
+                font-size: 0.9rem;
+                padding: 10px 12px;
+            }
+            .loader, .welcome-message {
+                padding: 40px 20px;
+                font-size: 1rem;
+            }
+            /* 确保表格在窄屏可滚动 */
+            .markdown-body table {
+                display: block;
+                overflow-x: auto;
+                white-space: nowrap;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .content-area {
+                padding: 12px;
+            }
+            .markdown-body {
+                padding: 12px;
+            }
+            .sidebar {
+                width: 200px; /* 展开时最大200px，避免内容区过窄 */
+                max-width: 70vw;
+            }
+            .sidebar.collapsed {
+                width: 50px;
+            }
+            .sidebar.collapsed .top-icons {
+                padding: 16px 0;
+                gap: 16px;
+            }
+            .icon-btn {
+                width: 26px;
+                height: 26px;
+                font-size: 20px;
+            }
+            .doc-item {
+                font-size: 0.85rem;
+                padding: 10px 8px;
+            }
+            .copy-code-btn {
+                font-size: 12px;
+                padding: 2px 6px;
+                top: 4px;
+                right: 4px;
+            }
+            .loader, .welcome-message {
+                padding: 30px 12px;
+                font-size: 0.95rem;
+            }
+            .doc-footer-time {
+                font-size: 0.75rem;
+            }
+            /* 防止 SVG 图标在小尺寸下变形 */
+            .icon-btn svg {
+                width: 1.2em;
+                height: 1.2em;
+            }
+        }
+
+        /* 针对非常窄的设备 (<=360px) 进一步优化 */
+        @media (max-width: 360px) {
+            .sidebar.collapsed {
+                width: 44px;
+            }
+            .sidebar.collapsed .icon-btn {
+                width: 24px;
+                height: 24px;
+                font-size: 18px;
+            }
+            .content-area {
+                padding: 8px;
+            }
+            .markdown-body {
+                padding: 8px;
+            }
+        }
+
+        /* 侧边栏展开时，在小屏幕上避免完全压榨内容区，同时保留可读性 */
+        @media (max-width: 500px) {
+            .sidebar:not(.collapsed) {
+                width: 180px;
+            }
+        }
+        /* 确保暗色模式下依然和谐 */
+        body.dark .sidebar:not(.collapsed) {
+            box-shadow: 2px 0 10px rgba(0,0,0,0.5);
         }
     </style>
 </head>
