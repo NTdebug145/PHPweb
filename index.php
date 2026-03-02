@@ -1,5 +1,4 @@
 <?php
-
 // 设置 Session Cookie 路径为根目录，使子目录也能读取
 session_set_cookie_params(['path' => '/']);
 session_start();
@@ -10,6 +9,14 @@ define('USERS_FILE', DATA_DIR . '/users.json');
 define('AVATAR_DIR', DATA_DIR . '/avatars');
 define('UPLOAD_DIR', DATA_DIR . '/upFile');
 define('FILE_NAME_JSON', UPLOAD_DIR . '/FileName/FileN.json');
+
+// 加密密钥：建议从环境变量读取（需为32字节base64编码）
+if (getenv('PASSWORD_HASH_ENCRYPTION_KEY')) {
+    define('HASH_ENCRYPTION_KEY', base64_decode(getenv('PASSWORD_HASH_ENCRYPTION_KEY')));
+} else {
+    // 演示密钥（生产环境请勿使用！）
+    define('HASH_ENCRYPTION_KEY', base64_decode('c2VjdXJlLWtleS0zMi1ieXRlcy1mb3ItYWVzLWdtYy0xMjM0NTY3OA=='));
+}
 
 // 创建目录 (使用更安全的 0755 权限)
 foreach ([DATA_DIR, AVATAR_DIR, UPLOAD_DIR, UPLOAD_DIR . '/FileName'] as $dir) {
@@ -38,6 +45,26 @@ function checkCSRF() {
     }
     return true;
 }
+
+// ==================== 加密/解密函数 ====================
+function encryptHash($hash) {
+    $key = HASH_ENCRYPTION_KEY;
+    $iv = random_bytes(openssl_cipher_iv_length('aes-256-gcm'));
+    $tag = '';
+    $ciphertext = openssl_encrypt($hash, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+    return base64_encode($iv . $tag . $ciphertext);
+}
+
+function decryptHash($encrypted) {
+    $key = HASH_ENCRYPTION_KEY;
+    $data = base64_decode($encrypted);
+    $ivlen = openssl_cipher_iv_length('aes-256-gcm');
+    $iv = substr($data, 0, $ivlen);
+    $tag = substr($data, $ivlen, 16);
+    $ciphertext = substr($data, $ivlen + 16);
+    return openssl_decrypt($ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+}
+// ======================================================
 
 // 处理API请求
 $action = isset($_GET['action']) ? $_GET['action'] : '';
@@ -153,7 +180,7 @@ function handleDeleteFriend() {
     return ['success' => true];
 }
 
-// 以下为HTML界面（省略，保持不变）
+// 以下为HTML界面（保持不变，仅修改了CSS部分，省略以节省篇幅，实际使用时请保留原样）
 ?>
 <!DOCTYPE html>
 <html>
@@ -161,7 +188,7 @@ function handleDeleteFriend() {
     <meta charset="UTF-8">
     <title>NTC</title>
 <style>
-/* 样式与之前完全相同，省略以节省篇幅 */
+/* 样式与之前完全相同，省略以节省篇幅，实际代码中请保留原样 */
 * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Microsoft YaHei', sans-serif; }
 /* ========== 浅色模式变量（默认） ========== */
 :root {
@@ -1503,7 +1530,7 @@ html.dark-mode .moon-svg { display: none; }
 </html>
 
 <?php
-// ==================== 后端函数（已修复漏洞） ====================
+// ==================== 后端函数（已修复漏洞并实现双层加密） ====================
 
 function getUsers() {
     $content = file_get_contents(USERS_FILE);
@@ -1565,6 +1592,14 @@ function generateUserId() {
     return $id;
 }
 
+// 安全返回用户信息（移除加密字段）
+function safeUser($user) {
+    $safe = $user;
+    unset($safe['encrypted_hash']);
+    return $safe;
+}
+
+// 处理注册
 function handleRegister() {
     $username = $_POST['username'] ?? '';
     $password = $_POST['password'] ?? '';
@@ -1575,10 +1610,13 @@ function handleRegister() {
         return ['success' => false, 'error' => '用户名已存在'];
     }
     $userId = generateUserId();
+    $hashed = password_hash($password, PASSWORD_DEFAULT);
+    $encryptedHash = encryptHash($hashed); // 加密哈希
+
     $newUser = [
         'id' => $userId,
         'username' => $username,
-        'password' => password_hash($password, PASSWORD_DEFAULT),
+        'encrypted_hash' => $encryptedHash,
         'nickname' => $username,
         'avatar' => null,
         'bio' => '',
@@ -1596,9 +1634,10 @@ function handleRegister() {
     $users = getUsers();
     $users[] = $newUser;
     saveUsers($users);
-    return ['success' => true, 'user' => $newUser];
+    return ['success' => true, 'user' => safeUser($newUser)];
 }
 
+// 处理登录
 function handleLogin() {
     $usernameOrId = $_POST['username'] ?? '';
     $password = $_POST['password'] ?? '';
@@ -1608,16 +1647,22 @@ function handleLogin() {
         $user = getUserById($usernameOrId);
     }
     
-    if (!$user || !password_verify($password, $user['password'])) {
+    if (!$user) {
         return ['success' => false, 'error' => '用户名/ID或密码错误'];
     }
-    // 会话固定防护：重新生成session ID
+
+    $hash = decryptHash($user['encrypted_hash']);
+    if ($hash === false || !password_verify($password, $hash)) {
+        return ['success' => false, 'error' => '用户名/ID或密码错误'];
+    }
+
     session_regenerate_id(true);
     $_SESSION['user_id'] = $user['id'];
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32)); // 生成CSRF令牌
-    return ['success' => true, 'user' => $user, 'csrf_token' => $_SESSION['csrf_token']];
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    return ['success' => true, 'user' => safeUser($user), 'csrf_token' => $_SESSION['csrf_token']];
 }
 
+// 处理登出
 function handleLogout() {
     if (!checkCSRF()) {
         return ['success' => false, 'error' => 'CSRF令牌无效'];
@@ -1626,6 +1671,7 @@ function handleLogout() {
     return ['success' => true];
 }
 
+// 获取当前用户信息
 function handleGetUserInfo() {
     if (!isset($_SESSION['user_id'])) {
         return ['loggedIn' => false];
@@ -1635,12 +1681,12 @@ function handleGetUserInfo() {
         session_destroy();
         return ['loggedIn' => false];
     }
-    // 返回CSRF令牌
     $csrf_token = $_SESSION['csrf_token'] ?? bin2hex(random_bytes(32));
     $_SESSION['csrf_token'] = $csrf_token;
-    return ['loggedIn' => true, 'user' => $user, 'csrf_token' => $csrf_token];
+    return ['loggedIn' => true, 'user' => safeUser($user), 'csrf_token' => $csrf_token];
 }
 
+// 更新用户信息（昵称、密码、验证方式、简介）
 function handleUpdateUser() {
     if (!isset($_SESSION['user_id'])) {
         return ['success' => false, 'error' => '未登录'];
@@ -1655,11 +1701,14 @@ function handleUpdateUser() {
 
     $user = &$users[$index];
 
+    // 修改密码（需要验证旧密码）
     if (isset($_POST['old_password']) && isset($_POST['password']) && !empty($_POST['password'])) {
-        if (!password_verify($_POST['old_password'], $user['password'])) {
+        $oldHash = decryptHash($user['encrypted_hash']);
+        if ($oldHash === false || !password_verify($_POST['old_password'], $oldHash)) {
             return ['success' => false, 'error' => '旧密码错误'];
         }
-        $user['password'] = password_hash($_POST['password'], PASSWORD_DEFAULT);
+        $newHash = password_hash($_POST['password'], PASSWORD_DEFAULT);
+        $user['encrypted_hash'] = encryptHash($newHash);
     }
 
     if (isset($_POST['nickname']) && !empty($_POST['nickname'])) {
@@ -1673,9 +1722,10 @@ function handleUpdateUser() {
     }
 
     saveUsers($users);
-    return ['success' => true, 'user' => $user, 'csrf_token' => $_SESSION['csrf_token']];
+    return ['success' => true, 'user' => safeUser($user), 'csrf_token' => $_SESSION['csrf_token']];
 }
 
+// 上传头像
 function handleUploadAvatar() {
     if (!isset($_SESSION['user_id'])) {
         return ['success' => false, 'error' => '未登录'];
@@ -1699,6 +1749,7 @@ function handleUploadAvatar() {
     return $result;
 }
 
+// 头像上传处理（与原来相同，略作修改）
 function handleAvatarUpload($file) {
     if ($file['error'] !== UPLOAD_ERR_OK) {
         return ['success' => false, 'error' => '上传错误'];
@@ -1722,18 +1773,19 @@ function handleAvatarUpload($file) {
     return ['success' => true, 'path' => 'data/avatars/' . $filename];
 }
 
+// 搜索用户（仅用于添加好友时验证存在）
 function handleSearchUser() {
     if (!isset($_SESSION['user_id'])) return ['success' => false, 'error' => '未登录'];
     $userId = $_GET['userId'] ?? '';
     if (!$userId || !isValidId($userId)) return ['success' => false, 'error' => '用户ID格式错误'];
+    // 禁止搜索自己
+    if ($userId == $_SESSION['user_id']) return ['success' => false, 'error' => '不能添加自己'];
     $user = getUserById($userId);
     if (!$user) return ['success' => false, 'error' => '用户不存在'];
-    if ($user['id'] == $_SESSION['user_id']) {
-        return ['success' => false, 'error' => '不能添加自己'];
-    }
     return ['success' => true, 'user' => ['id' => $user['id'], 'username' => $user['username']]];
 }
 
+// 查看用户详细信息（公开信息）
 function handleSearchUserInfo() {
     if (!isset($_SESSION['user_id'])) return ['success' => false, 'error' => '未登录'];
     $userId = $_GET['userId'] ?? '';
@@ -1752,12 +1804,14 @@ function handleSearchUserInfo() {
     ];
 }
 
+// 发送好友请求
 function handleSendFriendRequest() {
     if (!isset($_SESSION['user_id'])) return ['success' => false, 'error' => '未登录'];
     if (!checkCSRF()) return ['success' => false, 'error' => 'CSRF令牌无效'];
     $currentId = $_SESSION['user_id'];
     $targetId = $_POST['targetId'] ?? '';
     if (!$targetId || !isValidId($targetId)) return ['success' => false, 'error' => '目标ID格式错误'];
+    if ($targetId == $currentId) return ['success' => false, 'error' => '不能添加自己'];
 
     $targetUser = getUserById($targetId);
     if (!$targetUser) return ['success' => false, 'error' => '目标用户不存在'];
@@ -1776,12 +1830,25 @@ function handleSendFriendRequest() {
     }
 
     if ($verifyMode == 'allow_all') {
+        // 检查对方好友列表中是否已有 pending 请求，若有则直接转为 accepted
+        $targetFriends = getFriends($targetId);
+        $foundPending = false;
+        foreach ($targetFriends as &$tf) {
+            if ($tf['id'] == $currentId && $tf['status'] == 'pending') {
+                $tf['status'] = 'accepted';
+                $tf['since'] = time();
+                $foundPending = true;
+                break;
+            }
+        }
+        if (!$foundPending) {
+            $targetFriends[] = ['id' => $currentId, 'status' => 'accepted', 'since' => time()];
+        }
+        saveFriends($targetId, $targetFriends);
+
+        // 在自己的好友列表中添加对方
         $myFriends[] = ['id' => $targetId, 'status' => 'accepted', 'since' => time()];
         saveFriends($currentId, $myFriends);
-
-        $targetFriends = getFriends($targetId);
-        $targetFriends[] = ['id' => $currentId, 'status' => 'accepted', 'since' => time()];
-        saveFriends($targetId, $targetFriends);
         return ['success' => true, 'message' => '添加好友成功'];
     }
 
@@ -1797,6 +1864,7 @@ function handleSendFriendRequest() {
     return ['success' => true, 'message' => '好友请求已发送'];
 }
 
+// 接受好友请求
 function handleAcceptFriendRequest() {
     if (!isset($_SESSION['user_id'])) return ['success' => false, 'error' => '未登录'];
     if (!checkCSRF()) return ['success' => false, 'error' => 'CSRF令牌无效'];
@@ -1821,6 +1889,7 @@ function handleAcceptFriendRequest() {
     return ['success' => true];
 }
 
+// 拒绝好友请求
 function handleRejectFriendRequest() {
     if (!isset($_SESSION['user_id'])) return ['success' => false, 'error' => '未登录'];
     if (!checkCSRF()) return ['success' => false, 'error' => 'CSRF令牌无效'];
@@ -1835,6 +1904,7 @@ function handleRejectFriendRequest() {
     return ['success' => true];
 }
 
+// 获取好友申请列表
 function handleGetFriendRequests() {
     if (!isset($_SESSION['user_id'])) return ['success' => false, 'error' => '未登录'];
     $currentId = $_SESSION['user_id'];
@@ -1855,6 +1925,7 @@ function handleGetFriendRequests() {
     return ['success' => true, 'requests' => $result];
 }
 
+// 获取好友列表
 function handleGetFriends() {
     if (!isset($_SESSION['user_id'])) return ['success' => false, 'error' => '未登录'];
     $userId = $_SESSION['user_id'];
@@ -1875,6 +1946,7 @@ function handleGetFriends() {
     return ['success' => true, 'friends' => $result];
 }
 
+// 获取聊天记录
 function handleGetMessages() {
     if (!isset($_SESSION['user_id'])) return ['success' => false, 'error' => '未登录'];
     $userId = $_SESSION['user_id'];
@@ -1892,6 +1964,7 @@ function handleGetMessages() {
     return ['success' => true, 'messages' => $messages];
 }
 
+// 发送消息
 function handleSendMessage() {
     if (!isset($_SESSION['user_id'])) return ['success' => false, 'error' => '未登录'];
     if (!checkCSRF()) return ['success' => false, 'error' => 'CSRF令牌无效'];
@@ -1920,6 +1993,7 @@ function handleSendMessage() {
     return ['success' => true];
 }
 
+// 上传图片
 function handleUploadImage() {
     if (!isset($_SESSION['user_id'])) return ['success' => false, 'error' => '未登录'];
     if (!checkCSRF()) return ['success' => false, 'error' => 'CSRF令牌无效'];
@@ -1951,7 +2025,12 @@ function handleUploadImage() {
     return ['success' => true, 'fileId' => $md5];
 }
 
+// 获取图片（增加登录验证）
 function handleGetImage() {
+    if (!isset($_SESSION['user_id'])) {
+        header('HTTP/1.0 401 Unauthorized');
+        exit;
+    }
     $fileId = $_GET['file'] ?? '';
     // 严格校验文件ID必须为32位十六进制（MD5格式）
     if (!$fileId || !preg_match('/^[a-f0-9]{32}$/i', $fileId)) {
