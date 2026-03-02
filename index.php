@@ -203,6 +203,102 @@ function handleDeleteFriend() {
     return ['success' => true];
 }
 
+/**
+ * 获取会话密钥（基于双方ID和注册时间排序后哈希）
+ * @param string $userIdA
+ * @param string $userIdB
+ * @return string 32字节二进制密钥
+ * @throws Exception 如果任一用户不存在
+ */
+function getSessionKey($userIdA, $userIdB) {
+    $userA = getUserById($userIdA);
+    $userB = getUserById($userIdB);
+    if (!$userA || !$userB) {
+        throw new Exception("User not found for session key generation");
+    }
+    // 按ID排序确保一致性
+    if ($userIdA < $userIdB) {
+        $seed = $userIdA . $userA['registered'] . $userIdB . $userB['registered'];
+    } else {
+        $seed = $userIdB . $userB['registered'] . $userIdA . $userA['registered'];
+    }
+    return hash('sha256', $seed, true);
+}
+
+/**
+ * 获取旧版密钥（仅基于当前用户）
+ * @param string $userId
+ * @return string 32字节二进制密钥
+ * @throws Exception 如果用户不存在
+ */
+function getLegacyKey($userId) {
+    $user = getUserById($userId);
+    if (!$user) {
+        throw new Exception("User not found for legacy key");
+    }
+    $seed = $user['registered'] . $userId;
+    return hash('sha256', $seed, true);
+}
+
+/**
+ * 使用会话密钥加密数据
+ * @param string $userId 当前用户ID
+ * @param string $friendId 好友ID
+ * @param array $data 要加密的数据（将转为JSON）
+ * @return string Base64编码的密文（IV+密文）
+ */
+function encryptUserData($userId, $friendId, $data) {
+    $key = getSessionKey($userId, $friendId);
+    $iv = random_bytes(16);
+    $ciphertext = openssl_encrypt(json_encode($data), 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+    return base64_encode($iv . $ciphertext);
+}
+
+/**
+ * 使用会话密钥解密数据
+ * @param string $userId 当前用户ID
+ * @param string $friendId 好友ID
+ * @param string $encrypted Base64编码的密文
+ * @return array 解密后的数据
+ * @throws Exception 解密失败
+ */
+function decryptUserData($userId, $friendId, $encrypted) {
+    $key = getSessionKey($userId, $friendId);
+    $data = base64_decode($encrypted, true);
+    if ($data === false) {
+        throw new Exception("Invalid base64 data");
+    }
+    $iv = substr($data, 0, 16);
+    $ciphertext = substr($data, 16);
+    $json = openssl_decrypt($ciphertext, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+    if ($json === false) {
+        throw new Exception("Decryption failed");
+    }
+    return json_decode($json, true);
+}
+
+/**
+ * 使用旧版密钥解密（兼容之前基于单一用户的加密）
+ * @param string $userId 当前用户ID
+ * @param string $encrypted Base64编码的密文
+ * @return array 解密后的数据
+ * @throws Exception 解密失败
+ */
+function decryptUserDataLegacy($userId, $encrypted) {
+    $key = getLegacyKey($userId);
+    $data = base64_decode($encrypted, true);
+    if ($data === false) {
+        throw new Exception("Invalid base64 data");
+    }
+    $iv = substr($data, 0, 16);
+    $ciphertext = substr($data, 16);
+    $json = openssl_decrypt($ciphertext, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+    if ($json === false) {
+        throw new Exception("Decryption failed");
+    }
+    return json_decode($json, true);
+}
+
 // 以下为HTML界面（保持不变，仅修改了CSS部分，省略以节省篇幅，实际使用时请保留原样）
 ?>
 <!DOCTYPE html>
@@ -1602,20 +1698,49 @@ function saveFriends($userId, $friends) {
 }
 
 function getMessages($userId, $friendId) {
+    $user = getUserById($userId);
+    if (!$user) return [];
+
     $dir = DATA_DIR . '/' . $userId;
     if (!file_exists($dir)) mkdir($dir, 0755, true);
     $file = $dir . '/' . $friendId . '.json';
     if (!file_exists($file)) return [];
-    return json_decode(file_get_contents($file), true) ?: [];
+    $content = file_get_contents($file);
+    if (empty($content)) return [];
+
+    // 1. 尝试新密钥解密
+    try {
+        return decryptUserData($userId, $friendId, $content);
+    } catch (Exception $e) {
+        error_log("New decrypt failed for user $userId friend $friendId: " . $e->getMessage());
+    }
+
+    // 2. 尝试旧密钥解密（兼容之前版本）
+    try {
+        $data = decryptUserDataLegacy($userId, $content);
+        // 成功后不自动重写，等待下次保存时自动转换
+        return $data;
+    } catch (Exception $e) {
+        error_log("Legacy decrypt failed for user $userId friend $friendId: " . $e->getMessage());
+    }
+
+    // 3. 尝试作为明文JSON读取（兼容最初的无加密版本）
+    $data = json_decode($content, true);
+    if (is_array($data)) {
+        return $data;
+    }
+
+    return [];
 }
 
 function saveMessageToUser($userId, $friendId, $message) {
     $messages = getMessages($userId, $friendId);
     $messages[] = $message;
+    $encrypted = encryptUserData($userId, $friendId, $messages);
     $dir = DATA_DIR . '/' . $userId;
     if (!file_exists($dir)) mkdir($dir, 0755, true);
     $file = $dir . '/' . $friendId . '.json';
-    file_put_contents($file, json_encode($messages), LOCK_EX);
+    file_put_contents($file, $encrypted, LOCK_EX);
 }
 
 function generateUserId() {
