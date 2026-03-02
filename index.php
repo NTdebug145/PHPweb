@@ -22,13 +22,13 @@ define('AVATAR_DIR', DATA_DIR . '/avatars');
 define('UPLOAD_DIR', DATA_DIR . '/upFile');
 define('FILE_NAME_JSON', UPLOAD_DIR . '/FileName/FileN.json');
 
-// 加密密钥：建议从环境变量读取（需为32字节base64编码）
-if (getenv('PASSWORD_HASH_ENCRYPTION_KEY')) {
-    define('HASH_ENCRYPTION_KEY', base64_decode(getenv('PASSWORD_HASH_ENCRYPTION_KEY')));
-} else {
-    // 演示密钥（生产环境请勿使用！）
-    define('HASH_ENCRYPTION_KEY', base64_decode('c2VjdXJlLWtleS0zMi1ieXRlcy1mb3ItYWVzLWdtYy0xMjM0NTY3OA=='));
-}
+// // 加密密钥：建议从环境变量读取（需为32字节base64编码）
+// if (getenv('PASSWORD_HASH_ENCRYPTION_KEY')) {
+    // define('HASH_ENCRYPTION_KEY', base64_decode(getenv('PASSWORD_HASH_ENCRYPTION_KEY')));
+// } else {
+    // // 演示密钥（生产环境请勿使用！）
+    // define('HASH_ENCRYPTION_KEY', base64_decode('c2VjdXJlLWtleS0zMi1ieXRlcy1mb3ItYWVzLWdtYy0xMjM0NTY3OA=='));
+// }
 
 // 创建目录 (使用更安全的 0755 权限)
 foreach ([DATA_DIR, AVATAR_DIR, UPLOAD_DIR, UPLOAD_DIR . '/FileName'] as $dir) {
@@ -59,33 +59,190 @@ function checkCSRF() {
 }
 
 // ==================== 加密/解密函数 ====================
-function encryptHash($hash) {
-    $key = HASH_ENCRYPTION_KEY;
-    $iv = random_bytes(openssl_cipher_iv_length('aes-256-gcm'));
-    $tag = '';
-    $ciphertext = openssl_encrypt($hash, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
-    return base64_encode($iv . $tag . $ciphertext);
-}
-
-function decryptHash($encrypted) {
-    $key = HASH_ENCRYPTION_KEY;
-    $data = base64_decode($encrypted);
-    $ivlen = openssl_cipher_iv_length('aes-256-gcm');
-    $iv = substr($data, 0, $ivlen);
-    $tag = substr($data, $ivlen, 16);
-    $ciphertext = substr($data, $ivlen + 16);
-    return openssl_decrypt($ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
-}
-
-//加密器错误时启用下面的代码，注释上面的代码
-
 // function encryptHash($hash) {
-    // return $hash; // 直接返回，不加密
+    // $key = HASH_ENCRYPTION_KEY;
+    // $iv = random_bytes(openssl_cipher_iv_length('aes-256-gcm'));
+    // $tag = '';
+    // $ciphertext = openssl_encrypt($hash, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+    // return base64_encode($iv . $tag . $ciphertext);
 // }
 
 // function decryptHash($encrypted) {
-    // return $encrypted; // 直接返回，不解密
+    // $key = HASH_ENCRYPTION_KEY;
+    // $data = base64_decode($encrypted);
+    // $ivlen = openssl_cipher_iv_length('aes-256-gcm');
+    // $iv = substr($data, 0, $ivlen);
+    // $tag = substr($data, $ivlen, 16);
+    // $ciphertext = substr($data, $ivlen + 16);
+    // return openssl_decrypt($ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
 // }
+
+//加密器错误时启用下面的代码，注释上面的代码
+
+/**
+ * 对密码哈希进行 Base64 编码
+ */
+// function encryptHash($hash) {
+    // return base64_encode($hash);
+// }
+
+// /**
+ // * 解码 Base64 编码的密码哈希
+ // */
+// function decryptHash($encrypted) {
+    // return base64_decode($encrypted);
+// }
+
+
+//这个789113的加密方式真的是给我气笑了
+// /**
+ // * 加密：Base64 → 二进制（1→7，0→8）→ 压缩（777→9，888→1，78→3）
+ // */
+// function encryptHash($hash) {
+    // // 1. Base64 编码
+    // $base64 = base64_encode($hash);
+    // // 2. 每个字符转 8 位二进制
+    // $binary = '';
+    // for ($i = 0; $i < strlen($base64); $i++) {
+        // $binary .= sprintf('%08b', ord($base64[$i]));
+    // }
+    // // 3. 1→7, 0→8
+    // $str = str_replace(['1', '0'], ['7', '8'], $binary);
+    // // 4. 压缩：先替换三个连续7/8
+    // $str = preg_replace('/777/', '9', $str);
+    // $str = preg_replace('/888/', '1', $str);
+    // // 5. 再替换 "78" 为 3
+    // $str = preg_replace('/78/', '3', $str);
+    // return $str;
+// }
+
+/**
+ * 加密：原规则 → 固定 3 比特编码 → 比特打包 → Base64
+ */
+function encryptHash($hash) {
+    // 1. 原规则：Base64 → 二进制（1→7，0→8）→ 简单替换
+    $base64 = base64_encode($hash);
+    $binary = '';
+    for ($i = 0; $i < strlen($base64); $i++) {
+        $binary .= sprintf('%08b', ord($base64[$i]));
+    }
+    $str = str_replace(['1', '0'], ['7', '8'], $binary);
+    // 替换顺序：先三连，再 "78"
+    $str = preg_replace('/777/', '9', $str);
+    $str = preg_replace('/888/', '1', $str);
+    $str = preg_replace('/78/', '3', $str);
+
+    // 2. 固定 3 比特编码表（每个字符映射为 3 位二进制）
+    $map = [
+        '1' => '000',
+        '3' => '001',
+        '7' => '010',
+        '8' => '011',
+        '9' => '100',
+    ];
+
+    $bitStr = '';
+    for ($i = 0; $i < strlen($str); $i++) {
+        $ch = $str[$i];
+        if (!isset($map[$ch])) {
+            throw new Exception("无效字符出现在压缩字符串中: $ch");
+        }
+        $bitStr .= $map[$ch];
+    }
+
+    // 3. 比特串打包成字节（8位一组，右补零）
+    $packed = '';
+    $lenBits = strlen($bitStr);
+    for ($i = 0; $i < $lenBits; $i += 8) {
+        $byteBits = substr($bitStr, $i, 8);
+        $byteBits = str_pad($byteBits, 8, '0', STR_PAD_RIGHT);
+        $packed .= chr(bindec($byteBits));
+    }
+
+    // 4. 头部记录原始字符数（用于精确解码），用2字节网络字节序
+    $lenChars = strlen($str);
+    $header = pack('n', $lenChars); // 无符号短整型（大端序）
+
+    // 5. 最终存储：Base64 编码
+    return base64_encode($header . $packed);
+}
+
+/**
+ * 解密：Base64 解码 → 解析头部 → 解包比特流 → 固定 3 比特解码 → 原规则逆向
+ */
+function decryptHash($encrypted) {
+    // 1. Base64 解码
+    $data = base64_decode($encrypted);
+    if ($data === false) {
+        throw new Exception('无效的 Base64 数据');
+    }
+
+    // 2. 读取头部（前2字节）
+    if (strlen($data) < 2) {
+        throw new Exception('数据太短');
+    }
+    $lenChars = unpack('n', substr($data, 0, 2))[1]; // 网络字节序解析为整数
+
+    // 3. 剩余部分是打包的比特流
+    $packed = substr($data, 2);
+
+    // 4. 将字节流还原为完整比特串（每字节高位在前）
+    $bitStrFull = '';
+    for ($i = 0; $i < strlen($packed); $i++) {
+        $byte = ord($packed[$i]);
+        $bitStrFull .= str_pad(decbin($byte), 8, '0', STR_PAD_LEFT);
+    }
+
+    // 5. 根据原始字符数，计算需要的比特数（每个字符3比特），并截取有效比特
+    $totalBitsNeeded = $lenChars * 3;
+    if (strlen($bitStrFull) < $totalBitsNeeded) {
+        throw new Exception('数据不足，可能损坏');
+    }
+    $bitStr = substr($bitStrFull, 0, $totalBitsNeeded);
+
+    // 6. 每3位一组还原字符
+    $revMap = [
+        '000' => '1',
+        '001' => '3',
+        '010' => '7',
+        '011' => '8',
+        '100' => '9',
+    ];
+
+    $str = '';
+    for ($i = 0; $i < $totalBitsNeeded; $i += 3) {
+        $triple = substr($bitStr, $i, 3);
+        if (!isset($revMap[$triple])) {
+            throw new Exception("无效的比特组合: $triple");
+        }
+        $str .= $revMap[$triple];
+    }
+
+    // 7. 原规则逆向解压缩（注意顺序）
+    $str = preg_replace('/3/', '78', $str);
+    $str = preg_replace('/9/', '777', $str);
+    $str = preg_replace('/1/', '888', $str);
+
+    // 8. 7/8 还原为二进制 1/0
+    $binary = str_replace(['7', '8'], ['1', '0'], $str);
+
+    // 9. 二进制每8位转一个字符
+    $base64 = '';
+    $lenBin = strlen($binary);
+    for ($i = 0; $i < $lenBin; $i += 8) {
+        $byte = substr($binary, $i, 8);
+        if (strlen($byte) == 8) {
+            $base64 .= chr(bindec($byte));
+        }
+    }
+
+    // 10. Base64 解码得到原始哈希
+    $original = base64_decode($base64);
+    if ($original === false) {
+        throw new Exception("Base64 解码失败");
+    }
+    return $original;
+}
 
 // ======================================================
 
