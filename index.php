@@ -368,18 +368,35 @@ function handleDeleteFriend() {
  * @throws Exception 如果任一用户不存在
  */
 function getSessionKey($userIdA, $userIdB) {
-    $userA = getUserById($userIdA);
-    $userB = getUserById($userIdB);
-    if (!$userA || !$userB) {
-        throw new Exception("User not found for session key generation");
+    // 从 A 的好友列表中查找 B 的共享密钥
+    $friendsA = getFriends($userIdA);
+    $sharedKey = null;
+    foreach ($friendsA as $f) {
+        if ($f['id'] == $userIdB && $f['status'] == 'accepted') {
+            if (isset($f['shared_key'])) {
+                $sharedKey = base64_decode($f['shared_key']);
+                break;
+            } else {
+                // 向后兼容：使用注册时间生成密钥（记录警告）
+                error_log("Warning: Missing shared_key for friends $userIdA and $userIdB, using legacy key.");
+                $userA = getUserById($userIdA);
+                $userB = getUserById($userIdB);
+                if (!$userA || !$userB) {
+                    throw new Exception("User not found for session key generation");
+                }
+                if ($userIdA < $userIdB) {
+                    $seed = $userIdA . $userA['registered'] . $userIdB . $userB['registered'];
+                } else {
+                    $seed = $userIdB . $userB['registered'] . $userIdA . $userA['registered'];
+                }
+                return hash('sha256', $seed, true);
+            }
+        }
     }
-    // 按ID排序确保一致性
-    if ($userIdA < $userIdB) {
-        $seed = $userIdA . $userA['registered'] . $userIdB . $userB['registered'];
-    } else {
-        $seed = $userIdB . $userB['registered'] . $userIdA . $userA['registered'];
+    if (!$sharedKey) {
+        throw new Exception("Shared key not found for users $userIdA and $userIdB");
     }
-    return hash('sha256', $seed, true);
+    return $sharedKey;
 }
 
 /**
@@ -2131,6 +2148,7 @@ function handleSearchUserInfo() {
 function handleSendFriendRequest() {
     if (!isset($_SESSION['user_id'])) return ['success' => false, 'error' => '未登录'];
     if (!checkCSRF()) return ['success' => false, 'error' => 'CSRF令牌无效'];
+    
     $currentId = $_SESSION['user_id'];
     $targetId = $_POST['targetId'] ?? '';
     if (!$targetId || !isValidId($targetId)) return ['success' => false, 'error' => '目标ID格式错误'];
@@ -2139,6 +2157,7 @@ function handleSendFriendRequest() {
     $targetUser = getUserById($targetId);
     if (!$targetUser) return ['success' => false, 'error' => '目标用户不存在'];
 
+    // 检查是否已经是好友
     $myFriends = getFriends($currentId);
     foreach ($myFriends as $f) {
         if ($f['id'] == $targetId && $f['status'] == 'accepted') {
@@ -2148,42 +2167,63 @@ function handleSendFriendRequest() {
 
     $verifyMode = $targetUser['verify_mode'] ?? 'need_verify';
 
+    // 对方禁止添加好友
     if ($verifyMode == 'deny_all') {
         return ['success' => false, 'error' => '对方禁止添加好友'];
     }
 
+    // 对方允许任何人添加
     if ($verifyMode == 'allow_all') {
-        // 检查对方好友列表中是否已有 pending 请求，若有则直接转为 accepted
-        $targetFriends = getFriends($targetId);
-        $foundPending = false;
-        foreach ($targetFriends as &$tf) {
-            if ($tf['id'] == $currentId && $tf['status'] == 'pending') {
-                $tf['status'] = 'accepted';
-                $tf['since'] = time();
-                $foundPending = true;
-                break;
-            }
-        }
-        if (!$foundPending) {
-            $targetFriends[] = ['id' => $currentId, 'status' => 'accepted', 'since' => time()];
-        }
-        saveFriends($targetId, $targetFriends);
+        // 生成共享密钥
+        $sharedKey = generateSharedKey();
 
-        // 在自己的好友列表中添加对方
-        $myFriends[] = ['id' => $targetId, 'status' => 'accepted', 'since' => time()];
-        saveFriends($currentId, $myFriends);
+        // 处理对方的好友列表
+        $targetFriends = getFriends($targetId);
+        // 移除可能存在的 pending 或旧的 accepted 记录（防止重复）
+        $targetFriends = array_filter($targetFriends, function($f) use ($currentId) {
+            return $f['id'] != $currentId;
+        });
+        // 添加 accepted 记录，包含共享密钥
+        $targetFriends[] = [
+            'id' => $currentId,
+            'status' => 'accepted',
+            'since' => time(),
+            'shared_key' => $sharedKey
+        ];
+        saveFriends($targetId, array_values($targetFriends));
+
+        // 处理自己的好友列表
+        $myFriends = array_filter($myFriends, function($f) use ($targetId) {
+            return $f['id'] != $targetId; // 移除任何旧记录
+        });
+        $myFriends[] = [
+            'id' => $targetId,
+            'status' => 'accepted',
+            'since' => time(),
+            'shared_key' => $sharedKey
+        ];
+        saveFriends($currentId, array_values($myFriends));
+
         return ['success' => true, 'message' => '添加好友成功'];
     }
 
-    // need_verify
+    // 需要验证模式 (need_verify)
+    // 检查是否已经发送过请求
     $targetFriends = getFriends($targetId);
     foreach ($targetFriends as $f) {
         if ($f['id'] == $currentId && $f['status'] == 'pending') {
             return ['success' => false, 'error' => '请求已发送，请等待'];
         }
     }
-    $targetFriends[] = ['id' => $currentId, 'status' => 'pending', 'since' => time()];
-    saveFriends($targetId, $targetFriends);
+
+    // 在对方的好友列表中添加 pending 请求（不生成共享密钥）
+    $targetFriends[] = [
+        'id' => $currentId,
+        'status' => 'pending',
+        'since' => time()
+    ];
+    saveFriends($targetId, array_values($targetFriends));
+
     return ['success' => true, 'message' => '好友请求已发送'];
 }
 
@@ -2194,21 +2234,42 @@ function handleAcceptFriendRequest() {
     $currentId = $_SESSION['user_id'];
     $requesterId = $_POST['requesterId'] ?? '';
     if (!$requesterId || !isValidId($requesterId)) return ['success' => false, 'error' => '请求者ID格式错误'];
+    
     $myFriends = getFriends($currentId);
     $found = false;
-    foreach ($myFriends as &$f) {
+    $index = null;
+    foreach ($myFriends as $i => $f) {
         if ($f['id'] == $requesterId && $f['status'] == 'pending') {
-            $f['status'] = 'accepted';
-            $f['since'] = time();
             $found = true;
+            $index = $i;
             break;
         }
     }
     if (!$found) return ['success' => false, 'error' => '没有找到该请求'];
+    
+    // 生成共享密钥
+    $sharedKey = generateSharedKey();
+    
+    // 更新自己的好友记录
+    $myFriends[$index]['status'] = 'accepted';
+    $myFriends[$index]['since'] = time();
+    $myFriends[$index]['shared_key'] = $sharedKey;
     saveFriends($currentId, $myFriends);
+    
+    // 更新对方的好友列表
     $requesterFriends = getFriends($requesterId);
-    $requesterFriends[] = ['id' => $currentId, 'status' => 'accepted', 'since' => time()];
-    saveFriends($requesterId, $requesterFriends);
+    // 移除可能存在的旧记录（防止重复）
+    $requesterFriends = array_filter($requesterFriends, function($f) use ($currentId) {
+        return !($f['id'] == $currentId);
+    });
+    $requesterFriends[] = [
+        'id' => $currentId,
+        'status' => 'accepted',
+        'since' => time(),
+        'shared_key' => $sharedKey
+    ];
+    saveFriends($requesterId, array_values($requesterFriends));
+    
     return ['success' => true];
 }
 
@@ -2267,6 +2328,13 @@ function handleGetFriends() {
         }
     }
     return ['success' => true, 'friends' => $result];
+}
+
+/**
+ * 生成 32 字节随机共享密钥（Base64 编码）
+ */
+function generateSharedKey() {
+    return base64_encode(random_bytes(32));
 }
 
 // 获取聊天记录
