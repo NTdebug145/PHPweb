@@ -22,7 +22,7 @@ define('ALLOWED_EXTENSIONS', ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz
 
 $baseDir = isset($_SERVER['DOCUMENT_ROOT']) ? $_SERVER['DOCUMENT_ROOT'] : __DIR__;
 define('UPLOAD_DIR', rtrim($baseDir, '/\\') . DIRECTORY_SEPARATOR . 'upF' . DIRECTORY_SEPARATOR);
-define('TEMP_DIR', rtrim($baseDir, '/upF\\') . DIRECTORY_SEPARATOR . 'temp' . DIRECTORY_SEPARATOR);
+define('TEMP_DIR', rtrim($baseDir, '/upF\\') . DIRECTORY_SEPARATOR . '/upF/temp' . DIRECTORY_SEPARATOR);
 define('FILES_MAP', UPLOAD_DIR . 'files.json');
 
 // ---------- 初始化目录 ----------
