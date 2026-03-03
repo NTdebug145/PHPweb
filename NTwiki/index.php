@@ -1,5 +1,220 @@
 <?php
 ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
+
+// ========== 新增：Session 支持（共享登录状态） ==========
+session_set_cookie_params(['path' => '/']);
+session_start();
+
+// 用户个性化配置目录
+define('USER_PS_DIR', __DIR__ . '/UserPS');
+if (!file_exists(USER_PS_DIR)) {
+    mkdir(USER_PS_DIR, 0755, true);
+}
+
+// 获取当前登录用户ID（来自聊天系统的session）
+$currentUserId = $_SESSION['user_id'] ?? null;
+
+// 加载用户个性化设置
+$userSettings = [];
+if ($currentUserId && file_exists(USER_PS_DIR . '/' . $currentUserId . '.json')) {
+    $settingsContent = file_get_contents(USER_PS_DIR . '/' . $currentUserId . '.json');
+    $userSettings = json_decode($settingsContent, true) ?: [];
+}
+// 默认设置（新增 useNoFlowWallpaper）
+$defaultSettings = [
+    'useWallpaper' => false,
+    'useNoFlowWallpaper' => false,
+    'wallpaperUrls' => [
+        'https://www.loliapi.com/acg/',
+        'https://bing.img.run/rand.php'
+    ],
+    'autoSwitch' => false
+];
+$userSettings = array_merge($defaultSettings, $userSettings);
+
+// ========== 新增：处理保存个性化设置的请求 ==========
+if (isset($_GET['action']) && $_GET['action'] === 'saveSettings') {
+    header('Content-Type: application/json; charset=utf-8');
+    if (!$currentUserId) {
+        echo json_encode(['success' => false, 'error' => '未登录']);
+        exit;
+    }
+    $input = json_decode(file_get_contents('php://input'), true);
+    if (!$input) {
+        echo json_encode(['success' => false, 'error' => '无效的请求数据']);
+        exit;
+    }
+    $useWallpaper = isset($input['useWallpaper']) ? (bool)$input['useWallpaper'] : false;
+    $useNoFlowWallpaper = isset($input['useNoFlowWallpaper']) ? (bool)$input['useNoFlowWallpaper'] : false;
+    $wallpaperUrls = isset($input['wallpaperUrls']) && is_array($input['wallpaperUrls']) ? $input['wallpaperUrls'] : [];
+    $autoSwitch = isset($input['autoSwitch']) ? (bool)$input['autoSwitch'] : false;
+
+    // 互斥校验：如果两者同时为 true，强制关闭无流量壁纸（可自行调整策略）
+    if ($useWallpaper && $useNoFlowWallpaper) {
+        $useNoFlowWallpaper = false; // 或返回错误，这里选择自动纠正
+    }
+
+    // 过滤 URL：只保留有效的 http/https 链接
+    $filteredUrls = [];
+    foreach ($wallpaperUrls as $url) {
+        $url = trim($url);
+        if (filter_var($url, FILTER_VALIDATE_URL) && preg_match('/^https?:\/\//i', $url)) {
+            $filteredUrls[] = $url;
+        }
+    }
+    if (empty($filteredUrls)) {
+        $filteredUrls = $defaultSettings['wallpaperUrls'];
+    }
+
+    $newSettings = [
+        'useWallpaper' => $useWallpaper,
+        'useNoFlowWallpaper' => $useNoFlowWallpaper,
+        'wallpaperUrls' => $filteredUrls,
+        'autoSwitch' => $autoSwitch
+    ];
+
+    file_put_contents(USER_PS_DIR . '/' . $currentUserId . '.json', json_encode($newSettings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    echo json_encode(['success' => true, 'settings' => $newSettings]);
+    exit;
+}
+
+// ========== 原有逻辑（文档列表扫描等）保持不变 ==========
+define('DOCS_DIR', 'docs/');
+
+$parsedownAvailable = false;
+$Parsedown = null;
+if (file_exists('Parsedown.php')) {
+    require_once 'Parsedown.php';
+    if (class_exists('Parsedown')) {
+        $Parsedown = new Parsedown();
+        $parsedownAvailable = true;
+    }
+}
+
+function simpleMarkdown($text) {
+    $safe = htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
+    return '<div class="fallback-warning">⚠️ 未检测到 Parsedown 库，正在显示原始 Markdown 文本。请将 <a href="https://github.com/erusev/parsedown" target="_blank" style="text-decoration:underline;">Parsedown.php</a> 放入同一目录以获得渲染效果。</div>'
+           . '<pre class="raw-markdown">' . $safe . '</pre>';
+}
+
+function formatFileTime($timestamp) {
+    return date('Y-m-d H:i:s', $timestamp);
+}
+
+function updateMdTimeJson($docs) {
+    $jsonFile = __DIR__ . '/MdTimeData.json';
+    $oldData = [];
+    if (file_exists($jsonFile)) {
+        $content = file_get_contents($jsonFile);
+        $oldData = json_decode($content, true);
+        if (!is_array($oldData)) {
+            $oldData = [];
+        }
+    }
+    $newData = [];
+    $now = time();
+    foreach ($docs as $doc) {
+        $name = $doc['name'];
+        $mtime = $doc['mtime'];
+        if (isset($oldData[$name])) {
+            $ctime = $oldData[$name]['ctime'];
+        } else {
+            $ctime = $now;
+        }
+        $newData[$name] = [
+            'ctime' => $ctime,
+            'mtime' => $mtime
+        ];
+    }
+    @file_put_contents($jsonFile, json_encode($newData, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+}
+
+// 处理文档获取请求
+if (isset($_GET['action']) && $_GET['action'] === 'get' && isset($_GET['doc'])) {
+    header('Content-Type: text/html; charset=utf-8');
+
+    $docParam = trim($_GET['doc']);
+    if (!preg_match('/^[\p{L}\p{N}_\-.]+$/u', $docParam)) {
+        http_response_code(400);
+        echo '<div class="error">无效的文档名称</div>';
+        exit;
+    }
+
+    $filename = $docParam . '.md';
+    $filePath = DOCS_DIR . $filename;
+
+    $realBase = realpath(DOCS_DIR);
+    if ($realBase === false) {
+        http_response_code(500);
+        echo '<div class="error">文档目录不存在</div>';
+        exit;
+    }
+    $realFile = realpath($filePath);
+    if ($realFile === false || strpos($realFile, $realBase) !== 0 || !file_exists($realFile)) {
+        http_response_code(404);
+        echo '<div class="error">文档未找到</div>';
+        exit;
+    }
+
+    $content = file_get_contents($realFile);
+    if ($content === false) {
+        http_response_code(500);
+        echo '<div class="error">无法读取文档</div>';
+        exit;
+    }
+
+    $ctime = null;
+    $mtime = null;
+    $jsonFile = __DIR__ . '/MdTimeData.json';
+    if (file_exists($jsonFile)) {
+        $jsonData = json_decode(file_get_contents($jsonFile), true);
+        if (isset($jsonData[$docParam])) {
+            $ctime = $jsonData[$docParam]['ctime'];
+            $mtime = $jsonData[$docParam]['mtime'];
+        }
+    }
+    if ($ctime === null) {
+        $ctime = filectime($realFile);
+    }
+    if ($mtime === null) {
+        $mtime = filemtime($realFile);
+    }
+
+    $timeStrCreate = formatFileTime($ctime);
+    $timeStrMod   = formatFileTime($mtime);
+
+    if ($parsedownAvailable && $Parsedown) {
+        $bodyHtml = $Parsedown->text($content);
+    } else {
+        $bodyHtml = simpleMarkdown($content);
+    }
+
+    $footerHtml = '<div class="doc-footer-time"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="4749"><path d="M914.181742 251.621027L672.174208 10.295205A34.085568 34.085568 0 0 0 645.587465 0.069535H134.303944a34.085568 34.085568 0 0 0-34.085569 34.085568v954.395906a34.085568 34.085568 0 0 0 34.085569 34.085568h755.336188a34.085568 34.085568 0 0 0 34.085569-34.085568V272.754079a34.085568 34.085568 0 0 0-9.543959-21.133052z m-92.712746 3.408557H666.720517V100.962816zM168.389512 954.465441V68.240671h430.159869v220.874481a34.085568 34.085568 0 0 0 34.085568 34.085568h222.919615V954.465441z" fill="currentColor" p-id="4750"></path><path d="M713.758601 545.438624H548.10274V379.782763a34.085568 34.085568 0 0 0-68.171136 0V545.438624H304.731784a34.085568 34.085568 0 0 0-34.085568 34.085568 33.403857 33.403857 0 0 0 4.771979 16.361073 34.085568 34.085568 0 0 0 31.358723 21.133052h170.427841v170.42784a34.085568 34.085568 0 1 0 68.171136 0V618.38174h170.42784a34.085568 34.085568 0 0 0 34.085568-34.085568 33.403857 33.403857 0 0 0-4.771979-16.361073A34.085568 34.085568 0 0 0 713.758601 545.438624z" fill="currentColor" p-id="4751"></path></svg> 创建时间：' . $timeStrCreate . '  <svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5477"><path d="M775.84 392.768l-155.2-172.352L160.768 643.264l-38.368 187.936 190.56-12.832zM929.952 229.952l-131.2-150.944-0.288-0.32a16 16 0 0 0-22.592-0.96l-131.168 120.576 155.168 172.352 128.832-118.464a15.936 15.936 0 0 0 1.248-22.24zM96 896h832v64H96z" p-id="5478"></path></svg> 最后编辑：' . $timeStrMod . '</div>';
+    echo $bodyHtml . $footerHtml;
+    exit;
+}
+
+// 扫描 docs 目录，构建文档列表
+$docs = [];
+if (is_dir(DOCS_DIR)) {
+    $files = glob(DOCS_DIR . '*.md');
+    foreach ($files as $file) {
+        $basename = basename($file, '.md');
+        if ($basename !== '' && $basename[0] !== '.') {
+            $mtime = filemtime($file);
+            $docs[] = [
+                'name'    => $basename,
+                'display' => $basename,
+                'mtime'   => $mtime,
+                'file'    => $basename . '.md'
+            ];
+        }
+    }
+    usort($docs, function($a, $b) {
+        return $b['mtime'] - $a['mtime'];
+    });
+    updateMdTimeJson($docs);
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -8,7 +223,7 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
     <title>NTC - wiki</title>
     <style>
-        /* 原有样式保持不变，仅新增太阳/月亮的显示控制 */
+        /* 原有样式保持不变，仅新增设置按钮及模态框样式，并添加动画 */
         * {
             margin: 0;
             padding: 0;
@@ -103,11 +318,19 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
             background-color: #334155;
         }
 
-        /* 控制太阳/月亮的显示 */
+        /* 太阳/月亮显示控制 */
         .sun-svg { display: none; }
         .moon-svg { display: inline-block; }
         body.dark .sun-svg { display: inline-block; }
         body.dark .moon-svg { display: none; }
+
+        /* 设置按钮：仅在侧边栏折叠时显示 */
+        .settings-icon {
+            display: none;
+        }
+        .sidebar.collapsed .settings-icon {
+            display: flex;
+        }
 
         .doc-list {
             list-style: none;
@@ -166,29 +389,67 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
             padding: 30px 40px;
             overflow-y: auto;
             background-color: #f8fafc;
-            transition: background-color 0.2s;
+            transition: background-color 0.2s, background-image 0.3s ease;
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            position: relative; /* 为伪元素定位 */
+            z-index: 1;
         }
 
         body.dark .content-area {
             background-color: #0f172a;
         }
 
+        /* 磨砂玻璃伪元素 - 仅在启用外部壁纸时显示 */
+        .content-area.has-wallpaper::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            z-index: -1;
+            pointer-events: none;
+        }
+        body.dark .content-area.has-wallpaper::before {
+            background-color: rgba(0, 0, 0, 0.3);
+        }
+
+        /* 无流量壁纸样式（纯CSS渐变动画） */
+        .content-area.noflow-wallpaper {
+            background: linear-gradient(-45deg, #ee7752, #e73c7e, #23a6d5, #23d5ab);
+            background-size: 400% 400%;
+            animation: gradient 15s ease infinite;
+        }
+        body.dark .content-area.noflow-wallpaper {
+            background: linear-gradient(-45deg, #1a1a2e, #16213e, #0f3460, #1a1a2e);
+            background-size: 400% 400%;
+        }
+        @keyframes gradient {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
         .markdown-body {
             max-width: 900px;
             margin: 0 auto;
-            background-color: white;
+            background-color: rgba(255, 255, 255, 0.8);
             padding: 32px 40px;
             border-radius: 5px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.02);
-            border: 1px solid #e2e8f0;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+            border: 1px solid rgba(226, 232, 240, 0.5);
             transition: background-color 0.2s, border-color 0.2s;
             position: relative;
         }
 
         body.dark .markdown-body {
-            background-color: #1e293b;
-            border-color: #334155;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+            background-color: rgba(30, 41, 59, 0.8);
+            border-color: rgba(51, 65, 85, 0.5);
         }
 
         .loader, .welcome-message {
@@ -398,7 +659,7 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
                 padding: 20px;
             }
             .sidebar {
-                width: 220px; /* 展开时略微收窄 */
+                width: 220px;
             }
             .sidebar.collapsed {
                 width: 60px;
@@ -416,7 +677,6 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
                 padding: 40px 20px;
                 font-size: 1rem;
             }
-            /* 确保表格在窄屏可滚动 */
             .markdown-body table {
                 display: block;
                 overflow-x: auto;
@@ -432,7 +692,7 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
                 padding: 12px;
             }
             .sidebar {
-                width: 200px; /* 展开时最大200px，避免内容区过窄 */
+                width: 200px;
                 max-width: 70vw;
             }
             .sidebar.collapsed {
@@ -464,14 +724,12 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
             .doc-footer-time {
                 font-size: 0.75rem;
             }
-            /* 防止 SVG 图标在小尺寸下变形 */
             .icon-btn svg {
                 width: 1.2em;
                 height: 1.2em;
             }
         }
 
-        /* 针对非常窄的设备 (<=360px) 进一步优化 */
         @media (max-width: 360px) {
             .sidebar.collapsed {
                 width: 44px;
@@ -489,188 +747,175 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
             }
         }
 
-        /* 侧边栏展开时，在小屏幕上避免完全压榨内容区，同时保留可读性 */
         @media (max-width: 500px) {
             .sidebar:not(.collapsed) {
                 width: 180px;
             }
         }
-        /* 确保暗色模式下依然和谐 */
         body.dark .sidebar:not(.collapsed) {
             box-shadow: 2px 0 10px rgba(0,0,0,0.5);
+        }
+
+        /* ---------- 新增：设置模态框样式（带动画，修复文字对齐） ---------- */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+            animation: fadeIn 0.2s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .modal-content {
+            background: var(--modal-bg, white);
+            padding: 25px;
+            border-radius: 12px;
+            min-width: 400px;
+            max-width: 600px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+            color: var(--text-color, #1e293b);
+            animation: slideUp 0.2s ease;
+        }
+
+        @keyframes slideUp {
+            from { transform: translateY(20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        body.dark .modal-content {
+            background: #1e293b;
+            color: #e2e8f0;
+        }
+
+        .modal-content h3 {
+            margin-bottom: 20px;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .modal-content label {
+            display: block;
+            margin: 15px 0 5px;
+            font-weight: 500;
+        }
+
+        .modal-content input[type="text"],
+        .modal-content textarea {
+            width: 100%;
+            padding: 8px 12px;
+            margin: 5px 0 10px;
+            border: 1px solid #e2e8f0;
+            border-radius: 4px;
+            font-size: 14px;
+            background: #fff;
+            color: #1e293b;
+        }
+
+        body.dark .modal-content input[type="text"],
+        body.dark .modal-content textarea {
+            background: #0f172a;
+            border-color: #334155;
+            color: #e2e8f0;
+        }
+
+        .modal-content textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+
+        /* 修复复选框与文字对齐 */
+        .modal-content .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 10px 0;
+        }
+
+        .modal-content .checkbox-row input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            margin: 0; /* 移除默认边距 */
+            flex-shrink: 0;
+        }
+
+        .modal-content .checkbox-row label {
+            margin: 0; /* 移除默认边距 */
+            font-weight: normal;
+            line-height: 1.4;
+        }
+
+        .modal-content .hint {
+            font-size: 0.85rem;
+            color: #64748b;
+            margin-top: -5px;
+            margin-bottom: 10px;
+        }
+
+        .modal-content button {
+            padding: 8px 16px;
+            margin-right: 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .modal-content button.primary {
+            background: #4f46e5;
+            color: white;
+        }
+
+        .modal-content button.secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .modal-content .close {
+            float: right;
+            font-size: 24px;
+            font-weight: bold;
+            cursor: pointer;
+            color: var(--text-color);
+        }
+
+        .error {
+            color: #dc2626;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+
+        .success {
+            color: #16a34a;
         }
     </style>
 </head>
 <body>
     <?php
-    // -------------------------------------------------------------------
     // 后端 PHP 逻辑（完全保留原时间记录功能）
-    // -------------------------------------------------------------------
-    define('DOCS_DIR', 'docs/');
-
-    $parsedownAvailable = false;
-    $Parsedown = null;
-    if (file_exists('Parsedown.php')) {
-        require_once 'Parsedown.php';
-        if (class_exists('Parsedown')) {
-            $Parsedown = new Parsedown();
-            $parsedownAvailable = true;
-        }
-    }
-
-    function simpleMarkdown($text) {
-        $safe = htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
-        return '<div class="fallback-warning">⚠️ 未检测到 Parsedown 库，正在显示原始 Markdown 文本。请将 <a href="https://github.com/erusev/parsedown" target="_blank" style="text-decoration:underline;">Parsedown.php</a> 放入同一目录以获得渲染效果。</div>'
-               . '<pre class="raw-markdown">' . $safe . '</pre>';
-    }
-
-    function formatFileTime($timestamp) {
-        return date('Y-m-d H:i:s', $timestamp);
-    }
-
-    /**
-     * 更新 MdTimeData.json 文件
-     * @param array $docs 当前扫描到的文档列表，每个元素包含 'name' 和 'mtime'
-     */
-    function updateMdTimeJson($docs) {
-        $jsonFile = __DIR__ . '/MdTimeData.json';
-        $oldData = [];
-        if (file_exists($jsonFile)) {
-            $content = file_get_contents($jsonFile);
-            $oldData = json_decode($content, true);
-            if (!is_array($oldData)) {
-                $oldData = [];
-            }
-        }
-        $newData = [];
-        $now = time(); // 当前时间作为新文件的“创建时间”
-        foreach ($docs as $doc) {
-            $name = $doc['name'];
-            $mtime = $doc['mtime']; // 文件系统修改时间
-            if (isset($oldData[$name])) {
-                // 已有记录：保留原有的创建时间，更新修改时间
-                $ctime = $oldData[$name]['ctime'];
-            } else {
-                // 新文件：使用当前时间作为创建时间
-                $ctime = $now;
-            }
-            $newData[$name] = [
-                'ctime' => $ctime,
-                'mtime' => $mtime
-            ];
-        }
-        // 写入 JSON（抑制警告，避免权限问题导致页面中断）
-        @file_put_contents($jsonFile, json_encode($newData, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-    }
-
-    // 处理文档获取请求
-    if (isset($_GET['action']) && $_GET['action'] === 'get' && isset($_GET['doc'])) {
-        header('Content-Type: text/html; charset=utf-8');
-
-        $docParam = trim($_GET['doc']);
-        if (!preg_match('/^[\p{L}\p{N}_\-.]+$/u', $docParam)) {
-            http_response_code(400);
-            echo '<div class="error">无效的文档名称</div>';
-            exit;
-        }
-
-        $filename = $docParam . '.md';
-        $filePath = DOCS_DIR . $filename;
-
-        $realBase = realpath(DOCS_DIR);
-        if ($realBase === false) {
-            http_response_code(500);
-            echo '<div class="error">文档目录不存在</div>';
-            exit;
-        }
-        $realFile = realpath($filePath);
-        if ($realFile === false || strpos($realFile, $realBase) !== 0 || !file_exists($realFile)) {
-            http_response_code(404);
-            echo '<div class="error">文档未找到</div>';
-            exit;
-        }
-
-        $content = file_get_contents($realFile);
-        if ($content === false) {
-            http_response_code(500);
-            echo '<div class="error">无法读取文档</div>';
-            exit;
-        }
-
-        // 从 MdTimeData.json 读取创建时间和最后修改时间（若存在）
-        $ctime = null;
-        $mtime = null;
-        $jsonFile = __DIR__ . '/MdTimeData.json';
-        if (file_exists($jsonFile)) {
-            $jsonData = json_decode(file_get_contents($jsonFile), true);
-            if (isset($jsonData[$docParam])) {
-                $ctime = $jsonData[$docParam]['ctime'];
-                $mtime = $jsonData[$docParam]['mtime'];
-            }
-        }
-        // 如果 JSON 中不存在，则回退到文件系统（并尝试更新 JSON，但一般不会发生）
-        if ($ctime === null) {
-            $ctime = filectime($realFile);
-        }
-        if ($mtime === null) {
-            $mtime = filemtime($realFile);
-        }
-
-        // 格式化时间
-        $timeStrCreate = formatFileTime($ctime);
-        $timeStrMod   = formatFileTime($mtime);
-
-        // 渲染文档内容
-        if ($parsedownAvailable && $Parsedown) {
-            $bodyHtml = $Parsedown->text($content);
-        } else {
-            $bodyHtml = simpleMarkdown($content);
-        }
-
-        // 页脚显示创建时间和最后修改时间
-        $footerHtml = '<div class="doc-footer-time"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="4749"><path d="M914.181742 251.621027L672.174208 10.295205A34.085568 34.085568 0 0 0 645.587465 0.069535H134.303944a34.085568 34.085568 0 0 0-34.085569 34.085568v954.395906a34.085568 34.085568 0 0 0 34.085569 34.085568h755.336188a34.085568 34.085568 0 0 0 34.085569-34.085568V272.754079a34.085568 34.085568 0 0 0-9.543959-21.133052z m-92.712746 3.408557H666.720517V100.962816zM168.389512 954.465441V68.240671h430.159869v220.874481a34.085568 34.085568 0 0 0 34.085568 34.085568h222.919615V954.465441z" fill="currentColor" p-id="4750"></path><path d="M713.758601 545.438624H548.10274V379.782763a34.085568 34.085568 0 0 0-68.171136 0V545.438624H304.731784a34.085568 34.085568 0 0 0-34.085568 34.085568 33.403857 33.403857 0 0 0 4.771979 16.361073 34.085568 34.085568 0 0 0 31.358723 21.133052h170.427841v170.42784a34.085568 34.085568 0 1 0 68.171136 0V618.38174h170.42784a34.085568 34.085568 0 0 0 34.085568-34.085568 33.403857 33.403857 0 0 0-4.771979-16.361073A34.085568 34.085568 0 0 0 713.758601 545.438624z" fill="currentColor" p-id="4751"></path></svg> 创建时间：' . $timeStrCreate . '  <svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5477"><path d="M775.84 392.768l-155.2-172.352L160.768 643.264l-38.368 187.936 190.56-12.832zM929.952 229.952l-131.2-150.944-0.288-0.32a16 16 0 0 0-22.592-0.96l-131.168 120.576 155.168 172.352 128.832-118.464a15.936 15.936 0 0 0 1.248-22.24zM96 896h832v64H96z" p-id="5478"></path></svg> 最后编辑：' . $timeStrMod . '</div>';
-        echo $bodyHtml . $footerHtml;
-        exit;
-    }
-
-    // 扫描 docs 目录，构建文档列表
-    $docs = [];
-    if (is_dir(DOCS_DIR)) {
-        $files = glob(DOCS_DIR . '*.md');
-        foreach ($files as $file) {
-            $basename = basename($file, '.md');
-            if ($basename !== '' && $basename[0] !== '.') {
-                $mtime = filemtime($file);
-                $docs[] = [
-                    'name'    => $basename,
-                    'display' => $basename,
-                    'mtime'   => $mtime,          // 保留修改时间用于排序和 JSON
-                    'file'    => $basename . '.md'
-                ];
-            }
-        }
-        // 按最后修改时间倒序排序
-        usort($docs, function($a, $b) {
-            return $b['mtime'] - $a['mtime'];
-        });
-
-        // 更新 MdTimeData.json
-        updateMdTimeJson($docs);
-    }
+    // 已在上方处理
     ?>
 
     <div class="app-container">
         <div class="sidebar collapsed" id="sidebar">
             <div class="top-icons">
                 <span class="icon-btn" id="menuToggle" title="展开/折叠菜单">☰</span>
-                <!-- 暗色模式切换按钮：内嵌两个SVG，由CSS控制显示 -->
                 <span class="icon-btn" id="darkModeToggle" title="暗色模式">
-                    <!-- 太阳 SVG -->
                     <svg class="sun-svg" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="787">
                         <path d="M501.48 493.55m-233.03 0a233.03 233.03 0 1 0 466.06 0 233.03 233.03 0 1 0-466.06 0Z" fill="#F9C626" p-id="788"></path>
                         <path d="M501.52 185.35H478.9c-8.28 0-15-6.72-15-15V87.59c0-8.28 6.72-15 15-15h22.62c8.28 0 15 6.72 15 15v82.76c0 8.28-6.72 15-15 15zM281.37 262.76l-16 16c-5.86 5.86-15.36 5.86-21.21 0l-58.52-58.52c-5.86-5.86-5.86-15.36 0-21.21l16-16c5.86-5.86 15.36-5.86 21.21 0l58.52 58.52c5.86 5.86 5.86 15.35 0 21.21zM185.76 478.48v22.62c0 8.28-6.72 15-15 15H88c-8.28 0-15-6.72-15-15v-22.62c0-8.28 6.72-15 15-15h82.76c8.28 0 15 6.72 15 15zM270.69 698.63l16 16c5.86 5.86 5.86 15.36 0 21.21l-58.52 58.52c-5.86 5.86-15.36 5.86-21.21 0l-16-16c-5.86-5.86-5.86-15.36 0-21.21l58.52-58.52c5.85-5.86 15.35-5.86 21.21 0zM486.41 794.24h22.62c8.28 0 15 6.72 15 15V892c0 8.28-6.72 15-15 15h-22.62c-8.28 0-15-6.72-15-15v-82.76c0-8.28 6.72-15 15-15zM706.56 709.31l16-16c5.86-5.86 15.36-5.86 21.21 0l58.52 58.52c5.86 5.86 5.86 15.36 0 21.21l-16 16c-5.86 5.86-15.36 5.86-21.21 0l-58.52-58.52c-5.86-5.85-5.86-15.35 0-21.21zM802.17 493.59v-22.62c0-8.28 6.72-15 15-15h82.76c8.28 0 15 6.72 15 15v22.62c0 8.28-6.72 15-15 15h-82.76c-8.28 0-15-6.72-15-15zM717.24 273.44l-16-16c-5.86-5.86-5.86-15.36 0-21.21l58.52-58.52c5.86-5.86 15.36-5.86 21.21 0l16 16c5.86 5.86 5.86 15.36 0 21.21l-58.52 58.52c-5.86 5.86-15.35 5.86-21.21 0z" fill="#F9C626" p-id="789"></path>
                     </svg>
-                    <!-- 月亮 SVG -->
                     <svg class="moon-svg" style="width: 1em; height: 1em; vertical-align: middle; fill: currentColor; overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="6243">
                         <path d="M565 200.4c25.6 44.6 40.4 96.2 40.4 151.3 0 167.9-136.1 304-304 304-22.9 0-45.2-2.6-66.7-7.4C284.5 760.7 397 839.2 527.8 839.2c177 0 320.5-143.5 320.5-320.5 0-164.4-123.8-299.8-283.3-318.3zM312.9 243.6h-39.2v-39.2c0-10.8-8.8-19.6-19.6-19.6s-19.6 8.8-19.6 19.6v39.2h-39.2c-10.8 0-19.6 8.8-19.6 19.6s8.8 19.6 19.6 19.6h39.2V322c0 10.8 8.8 19.6 19.6 19.6s19.6-8.8 19.6-19.6v-39.2h39.2c10.8 0 19.6-8.8 19.6-19.6s-8.8-19.6-19.6-19.6z" fill="#FFF0C2" p-id="6244"></path>
                         <path d="M306.9 245.6h-35.2v-35.2c0-9.7-7.9-17.6-17.6-17.6-9.7 0-17.6 7.9-17.6 17.6v35.2h-35.2c-9.7 0-17.6 7.9-17.6 17.6 0 9.7 7.9 17.6 17.6 17.6h35.2V316c0 9.7 7.9 17.6 17.6 17.6 9.7 0 17.6-7.9 17.6-17.6v-35.2h35.2c9.7 0 17.6-7.9 17.6-17.6 0-9.7-7.9-17.6-17.6-17.6z" fill="#FFC445" p-id="6245"></path>
@@ -679,7 +924,13 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
                         <path d="M563.4 223c23.8 41.4 37.5 89.4 37.5 140.6 0 156-126.5 282.5-282.5 282.5-21.3 0-42-2.4-62-6.9 46.3 104.5 150.8 177.4 272.4 177.4 164.5 0 297.9-133.4 297.9-297.9 0-152.7-115.1-278.6-263.3-295.7z" fill="#FFB948" p-id="6248"></path>
                     </svg>
                 </span>
-                <span class="icon-btn" id="homeBtn" title="返回首页"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="2891"><path d="M908.266667 515.786667a5.333333 5.333333 0 0 0 0-7.52l-348.8-348.8-49.066667-49.066667a5.333333 5.333333 0 0 0-7.466667 0L105.066667 508.266667a5.333333 5.333333 0 0 0 0 7.52l45.28 45.28a5.333333 5.333333 0 0 0 7.52 0l1.76-1.813334a5.333333 5.333333 0 0 1 9.066666 3.786667V912a5.333333 5.333333 0 0 0 5.333334 5.333333h665.28a5.333333 5.333333 0 0 0 5.333333-5.333333v-349.013333a5.333333 5.333333 0 0 1 9.066667-3.733334l1.76 1.813334a5.333333 5.333333 0 0 0 7.52 0zM764.64 842.666667H248.693333a5.333333 5.333333 0 0 1-5.333333-5.333334V477.706667a5.333333 5.333333 0 0 1 1.6-3.733334L502.933333 216a5.333333 5.333333 0 0 1 7.466667 0l257.973333 257.973333a5.333333 5.333333 0 0 1 1.6 3.733334V837.333333a5.333333 5.333333 0 0 1-5.333333 5.333334zM405.333333 863.36h202.666667v-222.933333a5.6 5.6 0 0 0-5.333333-5.866667H410.666667a5.6 5.6 0 0 0-5.333334 5.866667z" p-id="2892"></path></svg></span>
+                <span class="icon-btn" id="homeBtn" title="返回首页">
+                    <svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="2891"><path d="M908.266667 515.786667a5.333333 5.333333 0 0 0 0-7.52l-348.8-348.8-49.066667-49.066667a5.333333 5.333333 0 0 0-7.466667 0L105.066667 508.266667a5.333333 5.333333 0 0 0 0 7.52l45.28 45.28a5.333333 5.333333 0 0 0 7.52 0l1.76-1.813334a5.333333 5.333333 0 0 1 9.066666 3.786667V912a5.333333 5.333333 0 0 0 5.333334 5.333333h665.28a5.333333 5.333333 0 0 0 5.333333-5.333333v-349.013333a5.333333 5.333333 0 0 1 9.066667-3.733334l1.76 1.813334a5.333333 5.333333 0 0 0 7.52 0zM764.64 842.666667H248.693333a5.333333 5.333333 0 0 1-5.333333-5.333334V477.706667a5.333333 5.333333 0 0 1 1.6-3.733334L502.933333 216a5.333333 5.333333 0 0 1 7.466667 0l257.973333 257.973333a5.333333 5.333333 0 0 1 1.6 3.733334V837.333333a5.333333 5.333333 0 0 1-5.333333 5.333334zM405.333333 863.36h202.666667v-222.933333a5.6 5.6 0 0 0-5.333333-5.866667H410.666667a5.6 5.6 0 0 0-5.333334 5.866667z" p-id="2892"></path></svg>
+                </span>
+                <!-- 新增：设置按钮，仅在侧边栏折叠时显示 -->
+                <span class="icon-btn settings-icon" id="settingsBtn" title="个性化设置">
+                    <svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="1199"><path d="M892.375523 560.725628L895.422779 511.969527 892.375523 460.166171 999.029492 377.890251C1011.218518 368.748482 1011.218518 356.559457 1005.124005 344.370432L904.564548 167.629568C898.470035 155.440543 883.233754 152.393287 874.091985 155.440543L746.107221 207.2439A310.82014 310.82014 0 0 0 657.736789 158.487799L639.453251 21.361267C639.453251 9.172241 627.264226 0.030473 615.075201 0.030473H410.909031a30.472563 30.472563 0 0 0-27.425307 21.330794L365.200186 158.487799a295.583859 295.583859 0 0 0-85.323175 48.756101L151.892247 155.440543C139.703222 152.393287 127.514197 155.440543 121.419684 167.629568L17.812971 344.370432C11.718458 356.559457 14.765714 368.748482 23.907483 377.890251l109.701226 82.27592-6.094512 51.803356 6.094512 48.756101-109.701226 85.323176C14.765714 652.143316 11.718458 667.379598 17.812971 679.568623l103.606713 176.740864c6.094513 9.141769 18.283538 15.236281 30.472563 9.141769L279.877011 816.695155a390.048804 390.048804 0 0 0 85.323175 48.756101l18.283538 137.126532A27.425307 27.425307 0 0 0 410.909031 1023.908582h204.16617C627.264226 1023.908582 636.405995 1014.766813 639.453251 1002.577788L657.736789 865.451256A411.379598 411.379598 0 0 0 746.107221 816.695155l127.984764 48.756101c9.141769 6.094513 24.37805 0 30.472563-9.141769L1005.124005 679.568623C1011.218518 667.379598 1008.171261 652.143316 999.029492 646.048804L892.375523 560.725628zM511.468488 691.757648A179.78812 179.78812 0 0 1 334.727624 511.969527a176.740864 176.740864 0 1 1 356.528984 0 182.835377 182.835377 0 0 1-179.78812 179.788121z" p-id="1200"></path></svg>
+                </span>
             </div>
             <ul class="doc-list" id="docList">
                 <?php if (empty($docs)): ?>
@@ -701,15 +952,145 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
         </main>
     </div>
 
+    <!-- 新增：设置模态框（包含互斥的壁纸选项） -->
+    <div class="modal" id="settingsModal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('settingsModal')">&times;</span>
+            <h3><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="1199"><path d="M892.375523 560.725628L895.422779 511.969527 892.375523 460.166171 999.029492 377.890251C1011.218518 368.748482 1011.218518 356.559457 1005.124005 344.370432L904.564548 167.629568C898.470035 155.440543 883.233754 152.393287 874.091985 155.440543L746.107221 207.2439A310.82014 310.82014 0 0 0 657.736789 158.487799L639.453251 21.361267C639.453251 9.172241 627.264226 0.030473 615.075201 0.030473H410.909031a30.472563 30.472563 0 0 0-27.425307 21.330794L365.200186 158.487799a295.583859 295.583859 0 0 0-85.323175 48.756101L151.892247 155.440543C139.703222 152.393287 127.514197 155.440543 121.419684 167.629568L17.812971 344.370432C11.718458 356.559457 14.765714 368.748482 23.907483 377.890251l109.701226 82.27592-6.094512 51.803356 6.094512 48.756101-109.701226 85.323176C14.765714 652.143316 11.718458 667.379598 17.812971 679.568623l103.606713 176.740864c6.094513 9.141769 18.283538 15.236281 30.472563 9.141769L279.877011 816.695155a390.048804 390.048804 0 0 0 85.323175 48.756101l18.283538 137.126532A27.425307 27.425307 0 0 0 410.909031 1023.908582h204.16617C627.264226 1023.908582 636.405995 1014.766813 639.453251 1002.577788L657.736789 865.451256A411.379598 411.379598 0 0 0 746.107221 816.695155l127.984764 48.756101c9.141769 6.094513 24.37805 0 30.472563-9.141769L1005.124005 679.568623C1011.218518 667.379598 1008.171261 652.143316 999.029492 646.048804L892.375523 560.725628zM511.468488 691.757648A179.78812 179.78812 0 0 1 334.727624 511.969527a176.740864 176.740864 0 1 1 356.528984 0 182.835377 182.835377 0 0 1-179.78812 179.788121z" p-id="1200"></path></svg> 设置</h3>
+
+            <label>文档背景</label>
+            <!-- 启用外部壁纸 -->
+            <div class="checkbox-row">
+                <input type="checkbox" id="useWallpaper" <?= $userSettings['useWallpaper'] ? 'checked' : '' ?>>
+                <label for="useWallpaper">启用壁纸（加载外部图片）</label>
+            </div>
+
+            <!-- 启用无流量壁纸 -->
+            <div class="checkbox-row">
+                <input type="checkbox" id="useNoFlowWallpaper" <?= $userSettings['useNoFlowWallpaper'] ? 'checked' : '' ?>>
+                <label for="useNoFlowWallpaper">启用无流量壁纸（纯CSS渐变，零带宽）</label>
+            </div>
+
+            <label>壁纸URL列表（每行一个）</label>
+            <textarea id="wallpaperUrls" placeholder="https://..."><?= htmlspecialchars(implode("\n", $userSettings['wallpaperUrls'])) ?></textarea>
+            <div class="hint">内置推荐：https://www.loliapi.com/acg/ 和 https://bing.img.run/rand.php<br>⚠️ 不理解API接口和URL请勿随意更改</div>
+
+            <div class="checkbox-row">
+                <input type="checkbox" id="autoSwitch" <?= $userSettings['autoSwitch'] ? 'checked' : '' ?>>
+                <label for="autoSwitch">每分钟自动切换（仅外部壁纸有效）</label>
+            </div>
+
+            <div id="settingsMessage" style="margin: 10px 0;"></div>
+
+            <button class="primary" onclick="saveSettings()">保存设置</button>
+            <button class="secondary" onclick="closeModal('settingsModal')">取消</button>
+        </div>
+    </div>
+
     <script>
         (function() {
             const sidebar = document.getElementById('sidebar');
             const menuToggle = document.getElementById('menuToggle');
             const darkToggle = document.getElementById('darkModeToggle');
             const homeBtn = document.getElementById('homeBtn');
+            const settingsBtn = document.getElementById('settingsBtn');
             const docList = document.getElementById('docList');
-            const markdownDiv = document.getElementById('markdownRenderer');
+            const contentArea = document.getElementById('contentArea');
 
+            // 从PHP传递的用户设置
+            const userSettings = <?php echo json_encode($userSettings); ?>;
+            const isLoggedIn = <?php echo $currentUserId ? 'true' : 'false'; ?>;
+
+            let autoSwitchInterval = null;
+            let currentWallpaperUrl = null;
+
+            // 应用背景壁纸到 content-area
+            function applyWallpaper(url) {
+                if (!url) return;
+                // 清除其他背景类
+                contentArea.classList.remove('noflow-wallpaper');
+                contentArea.classList.add('has-wallpaper');
+                contentArea.style.backgroundImage = `url('${url}')`;
+                currentWallpaperUrl = url;
+            }
+
+            // 应用无流量壁纸
+            function applyNoFlowWallpaper() {
+                contentArea.classList.remove('has-wallpaper');
+                contentArea.classList.add('noflow-wallpaper');
+                contentArea.style.backgroundImage = ''; // 清除外部背景
+                currentWallpaperUrl = null;
+            }
+
+            // 清除所有壁纸效果
+            function clearAllWallpaper() {
+                contentArea.classList.remove('has-wallpaper', 'noflow-wallpaper');
+                contentArea.style.backgroundImage = '';
+                currentWallpaperUrl = null;
+            }
+
+            // 从URL列表中随机选择一个
+            function getRandomUrl(urls) {
+                if (!urls || urls.length === 0) return null;
+                return urls[Math.floor(Math.random() * urls.length)];
+            }
+
+            // 根据设置更新壁纸
+            function updateWallpaperFromSettings(settings) {
+                // 停止自动切换
+                if (autoSwitchInterval) {
+                    clearInterval(autoSwitchInterval);
+                    autoSwitchInterval = null;
+                }
+
+                if (settings.useNoFlowWallpaper) {
+                    applyNoFlowWallpaper();
+                    return;
+                }
+
+                if (settings.useWallpaper) {
+                    const urls = settings.wallpaperUrls.filter(u => u.trim() !== '');
+                    if (urls.length === 0) {
+                        clearAllWallpaper();
+                        return;
+                    }
+
+                    const newUrl = getRandomUrl(urls);
+                    if (newUrl) {
+                        // 测试图片是否可加载
+                        const img = new Image();
+                        img.onload = function() {
+                            applyWallpaper(newUrl);
+                        };
+                        img.onerror = function() {
+                            console.warn('图片加载失败:', newUrl);
+                            // 失败时尝试下一个？或者清空
+                            clearAllWallpaper();
+                        };
+                        img.src = newUrl;
+                    }
+
+                    // 自动切换
+                    if (settings.autoSwitch) {
+                        autoSwitchInterval = setInterval(() => {
+                            const nextUrl = getRandomUrl(urls);
+                            if (nextUrl) {
+                                const img = new Image();
+                                img.onload = () => applyWallpaper(nextUrl);
+                                img.onerror = () => {};
+                                img.src = nextUrl;
+                            }
+                        }, 60000); // 每分钟
+                    }
+                } else {
+                    clearAllWallpaper();
+                }
+            }
+
+            // 初始化背景
+            updateWallpaperFromSettings(userSettings);
+
+            // 更新菜单图标（折叠/展开）
             function updateMenuIcon() {
                 const isCollapsed = sidebar.classList.contains('collapsed');
                 menuToggle.textContent = isCollapsed ? '☰' : '✕';
@@ -730,7 +1111,6 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
                     document.body.classList.remove('dark');
                 }
                 localStorage.setItem('darkMode', enable ? 'dark' : 'light');
-                // 不再手动设置按钮文本，因为SVG通过CSS自动切换
             }
 
             function toggleDarkMode() {
@@ -743,61 +1123,152 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
                 window.location.href = '/';
             });
 
-// 为所有代码块添加复制按钮
-function addCopyButtonsToCodeBlocks() {
-    const pres = document.querySelectorAll('.markdown-body pre');
-    pres.forEach(pre => {
-        if (pre.querySelector('.copy-code-btn')) return;
-        const codeEl = pre.querySelector('code');
-        const codeText = codeEl ? codeEl.innerText : pre.innerText;
-        const btn = document.createElement('button');
-        btn.className = 'copy-code-btn';
-        btn.setAttribute('title', '复制代码');
+            // 设置按钮点击
+            settingsBtn.addEventListener('click', () => {
+                if (!isLoggedIn) {
+                    alert('请先登录以使用个性化设置');
+                    return;
+                }
+                // 填充当前设置到表单
+                document.getElementById('useWallpaper').checked = userSettings.useWallpaper;
+                document.getElementById('useNoFlowWallpaper').checked = userSettings.useNoFlowWallpaper;
+                document.getElementById('wallpaperUrls').value = userSettings.wallpaperUrls.join('\n');
+                document.getElementById('autoSwitch').checked = userSettings.autoSwitch;
+                document.getElementById('settingsModal').style.display = 'flex';
+            });
 
-        // 创建复制图标（📋 的 SVG）
-        const copyIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        copyIcon.setAttribute('class', 'icon');
-        copyIcon.setAttribute('style', 'width: 1em; height: 1em; vertical-align: middle; fill: currentColor; overflow: hidden;');
-        copyIcon.setAttribute('viewBox', '0 0 1024 1024');
-        copyIcon.setAttribute('version', '1.1');
-        copyIcon.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-        copyIcon.setAttribute('p-id', '8717');
-        copyIcon.innerHTML = '<path d="M682.666667 341.333333h128v469.333334H341.333333v-128H213.333333V213.333333h469.333334v128z m0 85.333334v256h-256v42.666666h298.666666v-298.666666h-42.666666zM298.666667 298.666667v298.666666h298.666666V298.666667H298.666667z" fill="currentColor" p-id="8718"></path>';
-        btn.appendChild(copyIcon);
+            // 关闭模态框
+            window.closeModal = function(id) {
+                document.getElementById(id).style.display = 'none';
+            };
 
-        btn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            try {
-                await navigator.clipboard.writeText(codeText);
-                // 保存原始内容（仅保存子节点，因为按钮可能包含多个元素）
-                const originalChildren = Array.from(btn.childNodes);
-                // 清空按钮
-                btn.innerHTML = '';
-                // 创建成功图标（✅ 的 SVG）
-                const successIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-                successIcon.setAttribute('class', 'icon');
-                successIcon.setAttribute('style', 'width: 1em; height: 1em; vertical-align: middle; fill: currentColor; overflow: hidden;');
-                successIcon.setAttribute('viewBox', '0 0 1024 1024');
-                successIcon.setAttribute('version', '1.1');
-                successIcon.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-                successIcon.setAttribute('p-id', '9647');
-                successIcon.innerHTML = '<path d="M511.434623 63.564711c-247.428276 0-448.010617 200.582341-448.010617 448.01164 0 247.430322 200.581318 448.01164 448.010617 448.01164 247.432369 0 448.012663-200.581318 448.012663-448.01164C959.447287 264.147052 758.865969 63.564711 511.434623 63.564711zM773.519714 382.576325 447.871959 704.039781 245.771031 507.044128l63.996546-68.093864 138.15964 138.15964 261.086343-261.087367L773.519714 382.576325z" fill="currentColor" p-id="9648"></path>';
-                btn.appendChild(successIcon);
-                setTimeout(() => {
-                    // 恢复原始内容
-                    btn.innerHTML = '';
-                    originalChildren.forEach(child => btn.appendChild(child));
-                }, 1500);
-            } catch (err) {
-                alert('复制失败，请手动复制');
+            // 保存设置
+            window.saveSettings = async function() {
+                const useWallpaper = document.getElementById('useWallpaper').checked;
+                const useNoFlowWallpaper = document.getElementById('useNoFlowWallpaper').checked;
+                const wallpaperUrlsText = document.getElementById('wallpaperUrls').value;
+                const autoSwitch = document.getElementById('autoSwitch').checked;
+                const urls = wallpaperUrlsText.split('\n').map(u => u.trim()).filter(u => u !== '');
+
+                // 简单验证 URL 格式
+                const invalidUrls = urls.filter(u => !/^https?:\/\//i.test(u));
+                if (invalidUrls.length > 0) {
+                    document.getElementById('settingsMessage').innerHTML = '<span class="error">包含非HTTP/HTTPS链接：' + invalidUrls.join(', ') + '</span>';
+                    return;
+                }
+
+                // 互斥处理：如果同时勾选，自动取消无流量壁纸
+                if (useWallpaper && useNoFlowWallpaper) {
+                    document.getElementById('useNoFlowWallpaper').checked = false;
+                    // 重新获取值
+                    const finalUseNoFlow = false;
+                    // 可选：提示用户
+                    document.getElementById('settingsMessage').innerHTML = '<span class="error">不能同时启用两种壁纸，已自动关闭无流量壁纸</span>';
+                    // 稍后执行保存
+                }
+
+                // 重新获取最终值
+                const finalUseWallpaper = document.getElementById('useWallpaper').checked;
+                const finalUseNoFlow = document.getElementById('useNoFlowWallpaper').checked;
+
+                // 测试图片加载（如果启用外部壁纸且有URL）
+                if (finalUseWallpaper && urls.length > 0) {
+                    const testImg = new Image();
+                    testImg.onload = function() {
+                        performSave(finalUseWallpaper, finalUseNoFlow, urls, autoSwitch);
+                    };
+                    testImg.onerror = function() {
+                        document.getElementById('settingsMessage').innerHTML = '<span class="error">图片加载失败，请检查URL是否有效</span>';
+                    };
+                    testImg.src = urls[0];
+                } else {
+                    performSave(finalUseWallpaper, finalUseNoFlow, urls, autoSwitch);
+                }
+            };
+
+            async function performSave(useWallpaper, useNoFlowWallpaper, urls, autoSwitch) {
+                const settings = {
+                    useWallpaper,
+                    useNoFlowWallpaper,
+                    wallpaperUrls: urls,
+                    autoSwitch
+                };
+
+                try {
+                    const response = await fetch('?action=saveSettings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(settings)
+                    });
+                    const data = await response.json();
+                    if (data.success) {
+                        document.getElementById('settingsMessage').innerHTML = '<span class="success">保存成功</span>';
+                        // 更新本地 userSettings
+                        Object.assign(userSettings, data.settings);
+                        // 应用新设置
+                        updateWallpaperFromSettings(userSettings);
+                        setTimeout(() => closeModal('settingsModal'), 1000);
+                    } else {
+                        document.getElementById('settingsMessage').innerHTML = '<span class="error">保存失败：' + (data.error || '未知错误') + '</span>';
+                    }
+                } catch (e) {
+                    document.getElementById('settingsMessage').innerHTML = '<span class="error">请求异常：' + e.message + '</span>';
+                }
             }
-        });
-        pre.appendChild(btn);
-    });
-}
+
+            // 为所有代码块添加复制按钮（原有函数）
+            function addCopyButtonsToCodeBlocks() {
+                const markdownBody = document.querySelector('.markdown-body');
+                if (!markdownBody) return;
+                const pres = markdownBody.querySelectorAll('pre');
+                pres.forEach(pre => {
+                    if (pre.querySelector('.copy-code-btn')) return;
+                    const codeEl = pre.querySelector('code');
+                    const codeText = codeEl ? codeEl.innerText : pre.innerText;
+                    const btn = document.createElement('button');
+                    btn.className = 'copy-code-btn';
+                    btn.setAttribute('title', '复制代码');
+
+                    const copyIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                    copyIcon.setAttribute('class', 'icon');
+                    copyIcon.setAttribute('style', 'width: 1em; height: 1em; vertical-align: middle; fill: currentColor; overflow: hidden;');
+                    copyIcon.setAttribute('viewBox', '0 0 1024 1024');
+                    copyIcon.setAttribute('version', '1.1');
+                    copyIcon.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+                    copyIcon.setAttribute('p-id', '8717');
+                    copyIcon.innerHTML = '<path d="M682.666667 341.333333h128v469.333334H341.333333v-128H213.333333V213.333333h469.333334v128z m0 85.333334v256h-256v42.666666h298.666666v-298.666666h-42.666666zM298.666667 298.666667v298.666666h298.666666V298.666667H298.666667z" fill="currentColor" p-id="8718"></path>';
+                    btn.appendChild(copyIcon);
+
+                    btn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        try {
+                            await navigator.clipboard.writeText(codeText);
+                            const originalChildren = Array.from(btn.childNodes);
+                            btn.innerHTML = '';
+                            const successIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                            successIcon.setAttribute('class', 'icon');
+                            successIcon.setAttribute('style', 'width: 1em; height: 1em; vertical-align: middle; fill: currentColor; overflow: hidden;');
+                            successIcon.setAttribute('viewBox', '0 0 1024 1024');
+                            successIcon.setAttribute('version', '1.1');
+                            successIcon.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+                            successIcon.setAttribute('p-id', '9647');
+                            successIcon.innerHTML = '<path d="M511.434623 63.564711c-247.428276 0-448.010617 200.582341-448.010617 448.01164 0 247.430322 200.581318 448.01164 448.010617 448.01164 247.432369 0 448.012663-200.581318 448.012663-448.01164C959.447287 264.147052 758.865969 63.564711 511.434623 63.564711zM773.519714 382.576325 447.871959 704.039781 245.771031 507.044128l63.996546-68.093864 138.15964 138.15964 261.086343-261.087367L773.519714 382.576325z" fill="currentColor" p-id="9648"></path>';
+                            btn.appendChild(successIcon);
+                            setTimeout(() => {
+                                btn.innerHTML = '';
+                                originalChildren.forEach(child => btn.appendChild(child));
+                            }, 1500);
+                        } catch (err) {
+                            alert('复制失败，请手动复制');
+                        }
+                    });
+                    pre.appendChild(btn);
+                });
+            }
 
             async function loadDocument(docName) {
                 if (!docName) return;
+                const markdownDiv = document.getElementById('markdownRenderer');
                 markdownDiv.innerHTML = '<div class="loader"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="7922"><path d="M674.133333 878.933333l-98.133333-102.4c128-17.066667 230.4-123.733333 230.4-251.733333 0-123.733333-93.866667-230.4-217.6-251.733333l-89.6-89.6h38.4c196.266667 0 354.133333 153.6 354.133333 341.333333 0 128-76.8 243.2-183.466666 298.666667v85.333333l-34.133334-29.866667z m-93.866666-17.066666c-12.8 0-29.866667 4.266667-46.933334 4.266666-196.266667 0-354.133333-153.6-354.133333-341.333333 0-128 76.8-243.2 183.466667-298.666667V128l55.466666 55.466667 85.333334 85.333333c-132.266667 12.8-234.666667 123.733333-234.666667 256 0 128 98.133333 234.666667 226.133333 251.733333l85.333334 85.333334z" fill="currentColor" p-id="7923"></path></svg> 加载中...</div>';
                 try {
                     const response = await fetch(`?action=get&doc=${encodeURIComponent(docName)}`);
@@ -837,6 +1308,7 @@ function addCopyButtonsToCodeBlocks() {
             }
 
             function loadInitialDoc() {
+                const markdownDiv = document.getElementById('markdownRenderer');
                 if (window.location.hash.length > 1) {
                     const hashName = decodeURIComponent(window.location.hash.substring(1));
                     const items = document.querySelectorAll('.doc-item');
@@ -852,6 +1324,7 @@ function addCopyButtonsToCodeBlocks() {
             }
 
             window.addEventListener('hashchange', () => {
+                const markdownDiv = document.getElementById('markdownRenderer');
                 if (window.location.hash.length > 1) {
                     const docName = decodeURIComponent(window.location.hash.substring(1));
                     loadDocument(docName);
