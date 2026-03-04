@@ -984,6 +984,7 @@ body {
 }
 .message.own .right-col {
     align-items: flex-end;
+    line-height: 1.5; /* 根据字体大小调整 */
 }
 .message .sender-name {
     font-size: 13px;
@@ -993,6 +994,7 @@ body {
     margin-bottom: 4px;
     word-break: break-word;
     overflow-wrap: break-word;
+    line-height: 1.5; /* 根据字体大小调整 */
 }
 .message.own .sender-name {
     text-align: right;
@@ -1269,6 +1271,7 @@ html.dark-mode .moon-svg { display: none; }
     margin-left: 2px;
     display: inline-block;
     vertical-align: middle;
+    line-height: 1.5;   /* 与父元素一致 */
 }
 
 </style>
@@ -1330,7 +1333,7 @@ html.dark-mode .moon-svg { display: none; }
             <div class="dropdown-menu" id="leftMenu" style="left: 20px; right: auto; display: none;">
                 <a href="#" onclick="goToAnnouncement()">公告</a>
                 <a href="#" onclick="goToManagement(); return false;">我的信息</a>
-                <a href="#" onclick="goToUpload(); return false;">压缩包上传</a>
+                <!--<a href="#" onclick="goToUpload(); return false;">压缩包上传</a>-->
                 <a href="#" onclick="goToNTwiki(); return false;">NTwiki</a>
                 <a href="#" onclick="goToVIP(); return false;">VIP用户</a>
             </div>
@@ -1697,7 +1700,7 @@ async function doRegister() {
             }
         });
 
-        function goToUpload() { window.location.href = '/upF/'; }
+        //function goToUpload() { window.location.href = '/upF/'; }
         function goToAnnouncement() { window.location.href = '/An/'; }
         function goToNTwiki() { window.location.href = '/NTwiki/'; }
         function goToVIP() { window.location.href = '/VIP/'; }
