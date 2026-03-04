@@ -116,7 +116,7 @@ if (empty($csrf_token)) {
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>我的信息 - NTC</title>
+    <title>NTC - Management</title>
     <style>
         /* ========== 浅色模式变量 ========== */
         :root {

@@ -1000,7 +1000,7 @@ body {
 .message .bubble {
     background: var(--bubble-bg);
     padding: 10px 15px;
-    border-radius: 18px;
+    border-radius: 10px;
     box-shadow: 0 1px 2px rgba(0,0,0,0.1);
     word-wrap: break-word;
     max-width: 70%;
@@ -1265,8 +1265,8 @@ html.dark-mode .moon-svg { display: none; }
     color: #ffffff; /* 字体 */
     font-size: 1em;
     padding: 2px 6px;
-    border-radius: 10px;
-    margin-left: 6px;
+    border-radius: 7px;
+    margin-left: 2px;
     display: inline-block;
     vertical-align: middle;
 }
