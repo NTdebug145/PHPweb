@@ -1553,7 +1553,23 @@ async function loadGroupMessages(groupId) {
         console.error('加载群消息失败:', data.error);
         return;
     }
-    renderMessages(data.messages || []);
+    const newMessages = data.messages || [];
+    const container = document.getElementById('chatMessages');
+
+    if (groupId !== currentChatId) return; // 防止异步错乱
+
+    if (currentMessages.length === 0) {
+        renderMessages(newMessages);
+    } else {
+        if (newMessages.length > currentMessages.length) {
+            const added = newMessages.slice(currentMessages.length);
+            for (const msg of added) appendMessage(msg);
+            // 自动滚动到底部（如果用户已经在底部）
+            const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+            if (atBottom) container.scrollTop = container.scrollHeight;
+            currentMessages = newMessages;
+        }
+    }
 }
 
         function showLogin() {
@@ -2226,33 +2242,69 @@ async function sendMessage() {
             }
         });
 
-        document.getElementById('imageUpload').onchange = async function(e) {
-            const file = e.target.files[0];
-            if (!file) return;
-            const formData = new FormData();
-            formData.append('image', file);
-            formData.append('_csrf', currentUser.csrf_token);
-            const res = await fetch('?action=uploadImage', { method: 'POST', body: formData });
-            const data = await res.json();
-            if (data.success) {
-                const sendFormData = new URLSearchParams();
-                sendFormData.append('friendId', currentFriendId);
-                sendFormData.append('content', data.fileId);
-                sendFormData.append('type', 'image');
-                sendFormData.append('_csrf', currentUser.csrf_token);
-                const sendRes = await fetch('?action=sendMessage', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: sendFormData
-                });
-                if (sendRes.ok) {
-                    loadMessages(currentFriendId);
-                }
-            } else {
-                alert('上传失败: ' + data.error);
-            }
-            e.target.value = '';
+document.getElementById('imageUpload').onchange = async function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!currentChatId) {
+        alert('请先选择一个聊天对象');
+        e.target.value = '';
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('image', file);
+    formData.append('_csrf', currentUser.csrf_token);
+    const res = await fetch('?action=uploadImage', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!data.success) {
+        alert('上传失败: ' + data.error);
+        e.target.value = '';
+        return;
+    }
+
+    // 根据当前聊天类型发送消息
+    let url, params;
+    if (currentChatType === 'friend') {
+        url = '?action=sendMessage';
+        params = {
+            friendId: currentChatId,
+            content: data.fileId,
+            type: 'image',
+            _csrf: currentUser.csrf_token
         };
+    } else if (currentChatType === 'group') {
+        url = '?action=sendGroupMessage';
+        params = {
+            groupId: currentChatId,
+            content: data.fileId,
+            type: 'image',
+            _csrf: currentUser.csrf_token
+        };
+    } else {
+        alert('未知聊天类型');
+        e.target.value = '';
+        return;
+    }
+
+    const sendFormData = new URLSearchParams(params);
+    const sendRes = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: sendFormData
+    });
+    const sendData = await sendRes.json();
+    if (sendData.success) {
+        // 刷新对应聊天窗口
+        if (currentChatType === 'friend') {
+            loadMessages(currentChatId);
+        } else {
+            loadGroupMessages(currentChatId);
+        }
+    } else {
+        alert('发送失败: ' + (sendData.error || '未知错误'));
+    }
+    e.target.value = '';
+};
 
         function showAddFriend() {
             document.getElementById('addFriendModal').style.display = 'flex';
@@ -3048,7 +3100,6 @@ function handleGetImage() {
         exit;
     }
     $fileId = $_GET['file'] ?? '';
-    // 严格校验文件ID必须为32位十六进制（MD5格式）
     if (!$fileId || !preg_match('/^[a-f0-9]{32}$/i', $fileId)) {
         header('HTTP/1.0 400 Bad Request');
         exit;
@@ -3066,11 +3117,14 @@ function handleGetImage() {
             break;
         }
     }
+
+    // 添加缓存头：缓存 86400 秒（1天）
+    header('Cache-Control: public, max-age=86400');
+    header('Expires: ' . gmdate('D, d M Y H:i:s', time() + 86400) . ' GMT');
     header('Content-Type: ' . $mime);
     readfile($path);
     exit;
 }
-
 /**
  * 发送系统消息（机器人账号 1000000000）
  * @param string $toUserId 接收者ID
