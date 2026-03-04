@@ -336,6 +336,16 @@ if ($action) {
                 echo json_encode(handleSendGroupMessage());
                 break;
 
+            case 'getGroupInfo':
+                echo json_encode(handleGetGroupInfo());
+                break;
+            case 'leaveGroup':
+                echo json_encode(handleLeaveGroup());
+                break;
+            case 'removeGroupMember':
+                echo json_encode(handleRemoveGroupMember());
+                break;
+
             default:
                 echo json_encode(['error' => '无效操作']);
         }
@@ -353,6 +363,13 @@ function handleDeleteFriend() {
     if (!checkCSRF()) {
         return ['success' => false, 'error' => '无效的CSRF令牌'];
     }
+
+    // 禁止删除机器人
+    if ($friendId == '1000000000') {
+        return ['success' => false, 'error' => '未知的操作'];
+    }
+
+
     $currentId = $_SESSION['user_id'];
     $friendId = $_POST['friendId'] ?? '';
     if (!$friendId || !isValidId($friendId)) {
@@ -386,7 +403,6 @@ function handleDeleteFriend() {
     if (file_exists($theirMsgFile)) {
         unlink($theirMsgFile);
     }
-
     return ['success' => true];
 }
 
@@ -553,12 +569,6 @@ function generateGroupKey() {
 
 function handleCreateGroup() {
 
-if (isset($_FILES['group_avatar']) && $_FILES['group_avatar']['error'] === UPLOAD_ERR_OK) {
-    $avatarResult = handleGroupAvatarUpload($_FILES['group_avatar']);
-    if ($avatarResult['success']) {
-        $newGroup['avatar'] = $avatarResult['path'];
-    }
-}
 
     if (!isset($_SESSION['user_id'])) {
         return ['success' => false, 'error' => '未登录'];
@@ -585,6 +595,9 @@ if (isset($_FILES['group_avatar']) && $_FILES['group_avatar']['error'] === UPLOA
         if (!isValidId($mid) || !getUserById($mid)) {
             return ['success' => false, 'error' => "成员ID $mid 无效"];
         }
+        if ($mid == '1000000000') {  // <-- 新增过滤
+            return ['success' => false, 'error' => '你在想什么，你告诉我'];
+        }
     }
 
     // 生成群ID（与用户ID类似，10位数字）
@@ -605,6 +618,14 @@ if (isset($_FILES['group_avatar']) && $_FILES['group_avatar']['error'] === UPLOA
         'key' => generateGroupKey(),
         'avatar' => null,  // 新增头像路径
     ];
+
+    // ✅ 唯一的一处头像处理
+    if (isset($_FILES['group_avatar']) && $_FILES['group_avatar']['error'] === UPLOAD_ERR_OK) {
+        $avatarResult = handleGroupAvatarUpload($_FILES['group_avatar']);
+        if ($avatarResult['success']) {
+            $newGroup['avatar'] = $avatarResult['path'];
+        }
+    }
 
     $groups = json_decode(file_get_contents(GROUPS_FILE), true) ?: [];
     $groups[] = $newGroup;
@@ -684,14 +705,26 @@ function handleGetGroupMessages() {
         $messages = [];
     }
 
-    // 附加发送者名称
+    // 为每条消息附加发送者名称和头像
     $usersCache = [];
     foreach ($messages as &$msg) {
-        if (!isset($usersCache[$msg['from']])) {
-            $u = getUserById($msg['from']);
-            $usersCache[$msg['from']] = $u ? ($u['nickname'] ?? $u['username']) : $msg['from'];
+        $fromId = $msg['from']; // 定义变量，避免后续拼写错误
+        if (!isset($usersCache[$fromId])) {
+            $u = getUserById($fromId);
+            if ($u) {
+                $usersCache[$fromId] = [
+                    'name'   => $u['nickname'] ?? $u['username'],
+                    'avatar' => $u['avatar'] ?? null
+                ];
+            } else {
+                $usersCache[$fromId] = [
+                    'name'   => $fromId,
+                    'avatar' => null
+                ];
+            }
         }
-        $msg['fromName'] = $usersCache[$msg['from']];
+        $msg['fromName']   = $usersCache[$fromId]['name'];
+        $msg['fromAvatar'] = $usersCache[$fromId]['avatar']; // ✅ 正确，使用数组
     }
     return ['success' => true, 'messages' => $messages];
 }
@@ -1286,7 +1319,6 @@ html.dark-mode .moon-svg { display: none; }
             </div>
             <div class="dropdown-menu" id="dropdownMenu">
                 <a onclick="showFriendRequests()">好友申请 <span id="requestCount" style="background:#f56c6c; color:white; border-radius:10px; padding:2px 6px; margin-left:5px;">0</span></a>
-                <a onclick="deleteCurrentFriend()">删除好友</a>
                 <a onclick="showChangeAvatar()">修改头像</a>
                 <a onclick="showChangeNickname()">修改昵称</a>
                 <a onclick="showChangePassword()">修改密码</a>
@@ -1297,7 +1329,7 @@ html.dark-mode .moon-svg { display: none; }
             </div>
             <div class="dropdown-menu" id="leftMenu" style="left: 20px; right: auto; display: none;">
                 <a href="#" onclick="goToAnnouncement()">公告</a>
-                <a href="#" onclick="goToMyInfo(); return false;">我的信息</a>
+                <a href="#" onclick="goToManagement(); return false;">我的信息</a>
                 <a href="#" onclick="goToUpload(); return false;">压缩包上传</a>
                 <a href="#" onclick="goToNTwiki(); return false;">NTwiki</a>
                 <a href="#" onclick="goToVIP(); return false;">VIP用户</a>
@@ -1483,6 +1515,7 @@ async function showCreateGroupModal() {
         container.innerHTML = '';
         data.friends.forEach(f => {
             const div = document.createElement('div');
+            if (f.id === '1000000000') return; // <-- 新增过滤
             div.className = 'friend-check-item';
             div.innerHTML = `
                 <input type="checkbox" value="${escapeHtml(f.id)}" id="friend_${escapeHtml(f.id)}">
@@ -1516,9 +1549,11 @@ function selectGroup(group, element) {
 async function loadGroupMessages(groupId) {
     const res = await fetch('?action=getGroupMessages&groupId=' + groupId);
     const data = await res.json();
-    if (data.success) {
-        renderMessages(data.messages); // 复用好友消息渲染，但需要调整发送者名称
+    if (!data.success) {
+        console.error('加载群消息失败:', data.error);
+        return;
     }
+    renderMessages(data.messages || []);
 }
 
         function showLogin() {
@@ -1610,7 +1645,7 @@ async function doRegister() {
         function updateUserInfo() {
             document.getElementById('username').textContent = currentUser.nickname || currentUser.username;
             if (currentUser.avatar) {
-                document.getElementById('avatar').src = currentUser.avatar + '?t=' + Date.now();
+                document.getElementById('avatar').src = currentUser.avatar ? '/' + currentUser.avatar + '?t=' + Date.now() : DEFAULT_AVATAR;
             } else {
                 document.getElementById('avatar').src = DEFAULT_AVATAR;
             }
@@ -1650,7 +1685,7 @@ async function doRegister() {
         function goToAnnouncement() { window.location.href = '/An/'; }
         function goToNTwiki() { window.location.href = '/NTwiki/'; }
         function goToVIP() { window.location.href = '/VIP/'; }
-        function goToMyInfo() { window.location.href = '/MyInfo/'; }
+        function goToManagement() { window.location.href = '/Management/'; }
 
         function closeModal(id) {
             document.getElementById(id).style.display = 'none';
@@ -2008,32 +2043,30 @@ function selectFriend(friend, element) {
     loadMessages(friend.id);
 }
 
-        async function loadMessages(friendId) {
-            const res = await fetch('?action=getMessages&friendId=' + friendId);
-            const data = await res.json();
-            const newMessages = data.messages;
-            const container = document.getElementById('chatMessages');
+async function loadMessages(friendId) {
+    const res = await fetch('?action=getMessages&friendId=' + friendId);
+    const data = await res.json();
+    if (!data.success) {
+        console.error('加载消息失败:', data.error);
+        return;
+    }
+    const newMessages = data.messages || [];
+    const container = document.getElementById('chatMessages');
 
-            if (friendId !== currentFriendIdForMessages) {
-                return;
-            }
+    if (friendId !== currentFriendIdForMessages) return;
 
-            if (currentMessages.length === 0) {
-                renderMessages(newMessages);
-            } else {
-                if (newMessages.length > currentMessages.length) {
-                    const added = newMessages.slice(currentMessages.length);
-                    for (const msg of added) {
-                        appendMessage(msg);
-                    }
-                    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
-                    if (atBottom) {
-                        container.scrollTop = container.scrollHeight;
-                    }
-                    currentMessages = newMessages;
-                }
-            }
+    if (currentMessages.length === 0) {
+        renderMessages(newMessages);
+    } else {
+        if (newMessages.length > currentMessages.length) {
+            const added = newMessages.slice(currentMessages.length);
+            for (const msg of added) appendMessage(msg);
+            const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+            if (atBottom) container.scrollTop = container.scrollHeight;
+            currentMessages = newMessages;
         }
+    }
+}
 
 function appendMessage(msg) {
     const container = document.getElementById('chatMessages');
@@ -2050,7 +2083,7 @@ function appendMessage(msg) {
     if (isMe) {
         avatarImg.src = currentUser.avatar || DEFAULT_AVATAR;
     } else {
-        avatarImg.src = DEFAULT_AVATAR;
+        avatarImg.src = msg.fromAvatar ? '/' + msg.fromAvatar : DEFAULT_AVATAR;
     }
     avatarImg.onerror = () => { avatarImg.src = DEFAULT_AVATAR; };
     div.appendChild(avatarImg);
@@ -2319,8 +2352,9 @@ async function loadAndRenderGroups(container) {
     data.groups.forEach(g => {
         const div = document.createElement('div');
         div.className = 'friend-item';
-        const avatarUrl = g.avatar ? g.avatar : 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2230%22%20height%3D%2230%22%20viewBox%3D%220%200%2030%2030%22%3E%3Ccircle%20cx%3D%2215%22%20cy%3D%2215%22%20r%3D%2215%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E';
-        div.innerHTML = `<img src="${escapeHtml(avatarUrl)}" class="friend-avatar" alt="avatar"><span>👥 ${escapeHtml(g.name)}</span>`;
+        // ✅ 绝对路径：从网站根目录开始
+        const avatarUrl = g.avatar ? '/' + g.avatar : DEFAULT_AVATAR;
+        div.innerHTML = `<img src="${avatarUrl}" class="friend-avatar" alt="avatar"><span>👥 ${escapeHtml(g.name)}</span>`;
         div.dataset.groupId = g.id;
         div.onclick = () => selectGroup(g, div);
         container.appendChild(div);
@@ -2556,6 +2590,33 @@ function handleLogin() {
     session_regenerate_id(true);
     $_SESSION['user_id'] = $user['id'];
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+
+    // === 自动添加机器人为好友 ===
+    $robotId = '1000000000';
+    $userId = $user['id'];
+    $myFriends = getFriends($userId);
+    $alreadyFriend = false;
+    foreach ($myFriends as $f) {
+        if ($f['id'] == $robotId && isset($f['status']) && $f['status'] == 'accepted') {
+            $alreadyFriend = true;
+            break;
+        }
+    }
+    if (!$alreadyFriend) {
+        // 检查机器人用户是否存在（可选）
+        $robotUser = getUserById($robotId);
+        if ($robotUser) {
+            $myFriends[] = [
+                'id' => $robotId,
+                'status' => 'accepted',
+                'since' => time(),
+                'shared_key' => generateSharedKey() // 生成一个随机密钥，虽然用不到
+            ];
+            saveFriends($userId, $myFriends);
+        }
+    }
+    // === 结束自动添加 ===
+
     return ['success' => true, 'user' => safeUser($user), 'csrf_token' => $_SESSION['csrf_token']];
 }
 
@@ -2677,6 +2738,7 @@ function handleSearchUser() {
     if (!$userId || !isValidId($userId)) return ['success' => false, 'error' => '用户ID格式错误'];
     // 禁止搜索自己
     if ($userId == $_SESSION['user_id']) return ['success' => false, 'error' => '不能添加自己'];
+    if ($userId == '1000000000') return ['success' => false, 'error' => '此用户禁止添加']; // 新增过滤
     $user = getUserById($userId);
     if (!$user) return ['success' => false, 'error' => '用户不存在'];
     return ['success' => true, 'user' => ['id' => $user['id'], 'username' => $user['username']]];
@@ -2710,6 +2772,7 @@ function handleSendFriendRequest() {
     $targetId = $_POST['targetId'] ?? '';
     if (!$targetId || !isValidId($targetId)) return ['success' => false, 'error' => '目标ID格式错误'];
     if ($targetId == $currentId) return ['success' => false, 'error' => '不能添加自己'];
+    if ($targetId == '1000000000') return ['success' => false, 'error' => '此用户禁止添加']; // 新增
 
     $targetUser = getUserById($targetId);
     if (!$targetUser) return ['success' => false, 'error' => '目标用户不存在'];
@@ -2900,6 +2963,11 @@ function handleGetMessages() {
     $userId = $_SESSION['user_id'];
     $friendId = $_GET['friendId'] ?? '';
     if (!$friendId || !isValidId($friendId)) return ['success' => false, 'error' => '好友ID格式错误'];
+
+if ($friendId == '1000000000') {
+    return ['success' => true, 'messages' => getSystemMessages($userId)];
+}
+
     $messages = getMessages($userId, $friendId);
     $usersCache = [];
     foreach ($messages as &$msg) {
@@ -3002,4 +3070,219 @@ function handleGetImage() {
     readfile($path);
     exit;
 }
+
+/**
+ * 发送系统消息（机器人账号 1000000000）
+ * @param string $toUserId 接收者ID
+ * @param string $content 消息内容
+ */
+function sendSystemMessage($toUserId, $content) {
+    $dir = DATA_DIR . '/' . $toUserId;
+    if (!file_exists($dir)) {
+        if (!mkdir($dir, 0755, true)) {
+            error_log("Failed to create directory: $dir");
+            return false;
+        }
+    }
+    $file = $dir . '/1000000000.json';
+    $messages = [];
+    if (file_exists($file)) {
+        $contentRaw = file_get_contents($file);
+        $messages = json_decode($contentRaw, true) ?: [];
+    }
+    $messages[] = [
+        'from' => '1000000000',
+        'content' => $content,
+        'type' => 'text',
+        'timestamp' => time()
+    ];
+    $result = file_put_contents($file, json_encode($messages), LOCK_EX);
+    if ($result === false) {
+        error_log("Failed to write system message to $file");
+        return false;
+    }
+    return true;
+}
+
+/**
+ * 获取系统消息
+ */
+function getSystemMessages($userId) {
+    $file = DATA_DIR . '/' . $userId . '/1000000000.json';
+    if (!file_exists($file)) return [];
+    return json_decode(file_get_contents($file), true) ?: [];
+}
+
+function handleGetGroupInfo() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    $groupId = $_GET['groupId'] ?? '';
+    if (!$groupId || !isValidId($groupId)) {
+        return ['success' => false, 'error' => '群ID格式错误'];
+    }
+    $group = getGroupInfo($groupId);
+    if (!$group) {
+        return ['success' => false, 'error' => '群组不存在'];
+    }
+    // 返回基本信息，移除密钥
+    unset($group['key']);
+    return ['success' => true, 'group' => $group];
+}
+
+function handleLeaveGroup() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    if (!checkCSRF()) {
+        return ['success' => false, 'error' => 'CSRF令牌无效'];
+    }
+    $userId = $_SESSION['user_id'];
+    $groupId = $_POST['groupId'] ?? '';
+    if (!$groupId || !isValidId($groupId)) {
+        return ['success' => false, 'error' => '群ID格式错误'];
+    }
+
+    $groups = json_decode(file_get_contents(GROUPS_FILE), true) ?: [];
+    $found = false;
+    $groupIndex = null;
+    foreach ($groups as $index => $group) {
+        if ($group['id'] == $groupId) {
+            $found = true;
+            $groupIndex = $index;
+            break;
+        }
+    }
+    if (!$found) {
+        return ['success' => false, 'error' => '群组不存在'];
+    }
+
+    $group = &$groups[$groupIndex];
+    // 检查用户是否为成员
+    if (!in_array($userId, $group['members'])) {
+        return ['success' => false, 'error' => '您不是群成员'];
+    }
+
+    // 禁止群主直接退出（除非群组只剩自己）
+    if ($userId == $group['creator'] && count($group['members']) > 1) {
+        return ['success' => false, 'error' => '群主不能退出，请先转让群主'];
+    }
+
+    // 移除用户
+    $group['members'] = array_values(array_diff($group['members'], [$userId]));
+    $remaining = count($group['members']);
+
+    // 如果剩余成员数 >= 2，直接保存
+    if ($remaining >= 2) {
+        file_put_contents(GROUPS_FILE, json_encode($groups), LOCK_EX);
+        return ['success' => true];
+    }
+
+    // 剩余 1 人或 0 人，需要解散群组并发送机器人消息
+    $targetId = $group['creator']; // 向群主发送通知
+    $groupName = $group['name'];
+    $time = date('Y-m-d H:i:s');
+
+    // 删除群组
+    array_splice($groups, $groupIndex, 1);
+    file_put_contents(GROUPS_FILE, json_encode($groups), LOCK_EX);
+
+    // 删除群消息文件
+    $msgFile = GROUP_MSG_DIR . '/' . $groupId . '.json';
+    if (file_exists($msgFile)) {
+        unlink($msgFile);
+    }
+
+    // 发送机器人消息
+    $content = "{$groupName}群的群主你好\n你的{$groupName}群人数不足2人\n已在{$time}自动解散\n此消息为网站机器人回复\n祝您愉快";
+    sendSystemMessage($targetId, $content);
+
+    return ['success' => true];
+}
+
+function handleRemoveGroupMember() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    if (!checkCSRF()) {
+        return ['success' => false, 'error' => 'CSRF令牌无效'];
+    }
+    $currentId = $_SESSION['user_id'];
+    $groupId = $_POST['groupId'] ?? '';
+    $memberId = $_POST['memberId'] ?? '';
+    if (!$groupId || !isValidId($groupId) || !$memberId || !isValidId($memberId)) {
+        return ['success' => false, 'error' => '参数格式错误'];
+    }
+    if ($memberId == $currentId) {
+        return ['success' => false, 'error' => '不能踢出自己'];
+    }
+
+    $groups = json_decode(file_get_contents(GROUPS_FILE), true) ?: [];
+    $found = false;
+    $groupIndex = null;
+    foreach ($groups as $index => $group) {
+        if ($group['id'] == $groupId) {
+            $found = true;
+            $groupIndex = $index;
+            break;
+        }
+    }
+    if (!$found) {
+        return ['success' => false, 'error' => '群组不存在'];
+    }
+
+    $group = &$groups[$groupIndex];
+    // 检查当前用户是否为群主
+    if ($group['creator'] != $currentId) {
+        return ['success' => false, 'error' => '只有群主可以踢人'];
+    }
+
+    // 检查被踢者是否为成员
+    if (!in_array($memberId, $group['members'])) {
+        return ['success' => false, 'error' => '该用户不是群成员'];
+    }
+
+    // 获取被踢者信息用于消息
+    $kickedUser = getUserById($memberId);
+    $kickedName = $kickedUser ? ($kickedUser['nickname'] ?? $kickedUser['username']) : $memberId;
+    $groupName = $group['name'];
+    $kickTime = date('Y-m-d H:i:s');
+
+    // 向被踢者发送系统消息（无论是否解散）
+    $kickContent = "用户{$kickedName}你好\n您在{$kickTime}时\n群组{$groupName}的群主已将你移出群聊\n此消息为网站机器人回复\n祝您愉快";
+    sendSystemMessage($memberId, $kickContent);
+
+    // 移除成员
+    $group['members'] = array_values(array_diff($group['members'], [$memberId]));
+    $remaining = count($group['members']);
+
+    // 如果剩余成员数 >= 2，直接保存并返回
+    if ($remaining >= 2) {
+        file_put_contents(GROUPS_FILE, json_encode($groups), LOCK_EX);
+        return ['success' => true];
+    }
+
+    // 剩余 1 人或 0 人，需要解散群组并发送机器人消息给群主
+    $targetId = $group['creator']; // 向群主发送通知
+    $time = date('Y-m-d H:i:s');
+
+    // 从群组列表中移除该群
+    array_splice($groups, $groupIndex, 1);
+    file_put_contents(GROUPS_FILE, json_encode($groups), LOCK_EX);
+
+    // 删除群消息文件
+    $msgFile = GROUP_MSG_DIR . '/' . $groupId . '.json';
+    if (file_exists($msgFile)) {
+        unlink($msgFile);
+    }
+
+    // 发送解散通知给群主
+    $content = "{$groupName}群的群主你好\n你的{$groupName}群人数不足2人\n已在{$time}自动解散\n此消息为网站机器人回复\n祝您愉快";
+    if (!sendSystemMessage($targetId, $content)) {
+        error_log("Failed to send system message to $targetId for group $groupId");
+    }
+
+    return ['success' => true];
+}
+
 ?>
