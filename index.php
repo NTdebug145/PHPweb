@@ -21,6 +21,22 @@ define('USERS_FILE', DATA_DIR . '/users.json');
 define('AVATAR_DIR', DATA_DIR . '/avatars');
 define('UPLOAD_DIR', DATA_DIR . '/upFile');
 define('FILE_NAME_JSON', UPLOAD_DIR . '/FileName/FileN.json');
+define('GROUPS_FILE', DATA_DIR . '/groups.json');
+define('GROUP_MSG_DIR', DATA_DIR . '/groups'); // 存放群消息文件的目录
+define('GROUP_AVATAR_DIR', DATA_DIR . '/group_avatars');
+
+// 在文件开头创建目录
+if (!file_exists(GROUP_AVATAR_DIR)) {
+    mkdir(GROUP_AVATAR_DIR, 0755, true);
+}
+
+// 初始化群数据文件
+if (!file_exists(GROUPS_FILE)) {
+    file_put_contents(GROUPS_FILE, json_encode([]));
+}
+if (!file_exists(GROUP_MSG_DIR)) {
+    mkdir(GROUP_MSG_DIR, 0755, true);
+}
 
 // // 加密密钥：建议从环境变量读取（需为32字节base64编码）
 // if (getenv('PASSWORD_HASH_ENCRYPTION_KEY')) {
@@ -306,6 +322,20 @@ if ($action) {
             case 'deleteFriend':
                 echo json_encode(handleDeleteFriend());
                 break;
+
+            case 'createGroup':
+                echo json_encode(handleCreateGroup());
+                break;
+            case 'getGroupList':
+                echo json_encode(handleGetGroupList());
+                break;
+            case 'getGroupMessages':
+                echo json_encode(handleGetGroupMessages());
+                break;
+            case 'sendGroupMessage':
+                echo json_encode(handleSendGroupMessage());
+                break;
+
             default:
                 echo json_encode(['error' => '无效操作']);
         }
@@ -471,6 +501,248 @@ function decryptUserDataLegacy($userId, $encrypted) {
         throw new Exception("Decryption failed");
     }
     return json_decode($json, true);
+}
+
+/**
+ * 获取群信息（包括密钥）
+ */
+function getGroupInfo($groupId) {
+    $groups = json_decode(file_get_contents(GROUPS_FILE), true) ?: [];
+    foreach ($groups as $group) {
+        if ($group['id'] == $groupId) {
+            return $group;
+        }
+    }
+    return null;
+}
+
+/**
+ * 使用群密钥加密数据
+ */
+function encryptGroupData($groupId, $data) {
+    $group = getGroupInfo($groupId);
+    if (!$group) throw new Exception("Group not found");
+    $key = base64_decode($group['key']);
+    $iv = random_bytes(16);
+    $ciphertext = openssl_encrypt(json_encode($data), 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+    return base64_encode($iv . $ciphertext);
+}
+
+/**
+ * 使用群密钥解密数据
+ */
+function decryptGroupData($groupId, $encrypted) {
+    $group = getGroupInfo($groupId);
+    if (!$group) throw new Exception("Group not found");
+    $key = base64_decode($group['key']);
+    $data = base64_decode($encrypted, true);
+    if ($data === false) throw new Exception("Invalid base64");
+    $iv = substr($data, 0, 16);
+    $ciphertext = substr($data, 16);
+    $json = openssl_decrypt($ciphertext, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+    if ($json === false) throw new Exception("Decryption failed");
+    return json_decode($json, true);
+}
+
+/**
+ * 生成随机群密钥（32字节）
+ */
+function generateGroupKey() {
+    return base64_encode(random_bytes(32));
+}
+
+function handleCreateGroup() {
+
+if (isset($_FILES['group_avatar']) && $_FILES['group_avatar']['error'] === UPLOAD_ERR_OK) {
+    $avatarResult = handleGroupAvatarUpload($_FILES['group_avatar']);
+    if ($avatarResult['success']) {
+        $newGroup['avatar'] = $avatarResult['path'];
+    }
+}
+
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    if (!checkCSRF()) {
+        return ['success' => false, 'error' => 'CSRF令牌无效'];
+    }
+    $creatorId = $_SESSION['user_id'];
+    $groupName = trim($_POST['groupName'] ?? '');
+    $memberIds = $_POST['members'] ?? []; // 期望是数组，来自前端勾选的好友ID
+
+    if (empty($groupName)) {
+        return ['success' => false, 'error' => '群名称不能为空'];
+    }
+    if (!is_array($memberIds) || count($memberIds) < 1) {
+        return ['success' => false, 'error' => '请至少选择一位好友'];
+    }
+
+    // 去重并确保创建者自己也在成员中
+    $memberIds[] = $creatorId;
+    $memberIds = array_unique($memberIds);
+    // 验证所有成员ID是否存在且为有效数字ID
+    foreach ($memberIds as $mid) {
+        if (!isValidId($mid) || !getUserById($mid)) {
+            return ['success' => false, 'error' => "成员ID $mid 无效"];
+        }
+    }
+
+    // 生成群ID（与用户ID类似，10位数字）
+    do {
+        $groupId = '';
+        $groupId .= random_int(1, 9);
+        for ($i = 0; $i < 9; $i++) {
+            $groupId .= random_int(0, 9);
+        }
+    } while (getGroupInfo($groupId) !== null);
+
+    $newGroup = [
+        'id' => $groupId,
+        'name' => $groupName,
+        'creator' => $creatorId,
+        'created' => time(),
+        'members' => $memberIds,
+        'key' => generateGroupKey(),
+        'avatar' => null,  // 新增头像路径
+    ];
+
+    $groups = json_decode(file_get_contents(GROUPS_FILE), true) ?: [];
+    $groups[] = $newGroup;
+    file_put_contents(GROUPS_FILE, json_encode($groups), LOCK_EX);
+
+    // 创建空的消息文件（加密的空数组）
+    $emptyMessages = [];
+    $encrypted = encryptGroupData($groupId, $emptyMessages);
+    file_put_contents(GROUP_MSG_DIR . '/' . $groupId . '.json', $encrypted, LOCK_EX);
+
+    return ['success' => true, 'groupId' => $groupId];
+}
+
+function handleGroupAvatarUpload($file) {
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        return ['success' => false, 'error' => '上传错误'];
+    }
+    if ($file['size'] > 2 * 1024 * 1024) {
+        return ['success' => false, 'error' => '图片不能超过2MB'];
+    }
+    $finfo = finfo_open(FILEINFO_MIME_TYPE);
+    $mime = finfo_file($finfo, $file['tmp_name']);
+    finfo_close($finfo);
+    $allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!in_array($mime, $allowed)) {
+        return ['success' => false, 'error' => '只允许上传JPG、PNG、GIF、WEBP格式的图片'];
+    }
+    $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+    $filename = uniqid() . '.' . $ext;
+    $dest = GROUP_AVATAR_DIR . '/' . $filename;
+    if (!move_uploaded_file($file['tmp_name'], $dest)) {
+        return ['success' => false, 'error' => '保存失败'];
+    }
+    return ['success' => true, 'path' => 'data/group_avatars/' . $filename];
+}
+
+function handleGetGroupList() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    $userId = $_SESSION['user_id'];
+    $groups = json_decode(file_get_contents(GROUPS_FILE), true) ?: [];
+    $myGroups = [];
+    foreach ($groups as $group) {
+        if (in_array($userId, $group['members'])) {
+            // 不返回密钥
+            unset($group['key']);
+            $myGroups[] = $group;
+        }
+    }
+    return ['success' => true, 'groups' => $myGroups];
+}
+
+function handleGetGroupMessages() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    $userId = $_SESSION['user_id'];
+    $groupId = $_GET['groupId'] ?? '';
+    if (!$groupId || !isValidId($groupId)) {
+        return ['success' => false, 'error' => '群ID格式错误'];
+    }
+
+    $group = getGroupInfo($groupId);
+    if (!$group || !in_array($userId, $group['members'])) {
+        return ['success' => false, 'error' => '您不是群成员'];
+    }
+
+    $file = GROUP_MSG_DIR . '/' . $groupId . '.json';
+    if (!file_exists($file)) {
+        return ['success' => true, 'messages' => []];
+    }
+    $encrypted = file_get_contents($file);
+    try {
+        $messages = decryptGroupData($groupId, $encrypted);
+    } catch (Exception $e) {
+        $messages = [];
+    }
+
+    // 附加发送者名称
+    $usersCache = [];
+    foreach ($messages as &$msg) {
+        if (!isset($usersCache[$msg['from']])) {
+            $u = getUserById($msg['from']);
+            $usersCache[$msg['from']] = $u ? ($u['nickname'] ?? $u['username']) : $msg['from'];
+        }
+        $msg['fromName'] = $usersCache[$msg['from']];
+    }
+    return ['success' => true, 'messages' => $messages];
+}
+
+function handleSendGroupMessage() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    if (!checkCSRF()) {
+        return ['success' => false, 'error' => 'CSRF令牌无效'];
+    }
+    $fromId = $_SESSION['user_id'];
+    $groupId = $_POST['groupId'] ?? '';
+    $content = $_POST['content'] ?? '';
+    $type = $_POST['type'] ?? 'text';
+
+    if (!$groupId || !isValidId($groupId) || !$content) {
+        return ['success' => false, 'error' => '参数不足'];
+    }
+
+    $group = getGroupInfo($groupId);
+    if (!$group || !in_array($fromId, $group['members'])) {
+        return ['success' => false, 'error' => '您不是群成员'];
+    }
+
+    // 读取现有消息
+    $file = GROUP_MSG_DIR . '/' . $groupId . '.json';
+    if (!file_exists($file)) {
+        $messages = [];
+    } else {
+        $encrypted = file_get_contents($file);
+        try {
+            $messages = decryptGroupData($groupId, $encrypted);
+        } catch (Exception $e) {
+            $messages = [];
+        }
+    }
+
+    $newMsg = [
+        'from' => $fromId,
+        'content' => $content,
+        'type' => $type,
+        'timestamp' => time()
+    ];
+    $messages[] = $newMsg;
+
+    // 重新加密保存
+    $encrypted = encryptGroupData($groupId, $messages);
+    file_put_contents($file, $encrypted, LOCK_EX);
+
+    return ['success' => true];
 }
 
 // 以下为HTML界面（保持不变，仅修改了CSS部分，省略以节省篇幅，实际使用时请保留原样）
@@ -930,6 +1202,42 @@ body {
 .moon-svg { display: inline-block; }
 html.dark-mode .sun-svg { display: inline-block; }
 html.dark-mode .moon-svg { display: none; }
+
+/* 好友复选框列表项 */
+.friend-check-item {
+    display: flex;
+    align-items: center;
+    padding: 6px 0;
+    gap: 8px;
+}
+.friend-check-item input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    flex-shrink: 0;
+}
+.friend-check-item span {
+    line-height: 1.4;
+    word-break: break-word;
+}
+/* 模态框内容自适应 */
+.modal-content {
+    min-width: 300px;
+    max-width: 90vw;
+    width: auto;
+}
+
+.group-owner-tag {
+    background-color: #fedf00; /* 背景 */
+    color: #ffffff; /* 字体 */
+    font-size: 1em;
+    padding: 2px 6px;
+    border-radius: 10px;
+    margin-left: 6px;
+    display: inline-block;
+    vertical-align: middle;
+}
+
 </style>
 </head>
 <body>
@@ -1106,6 +1414,19 @@ html.dark-mode .moon-svg { display: none; }
         </div>
     </div>
 
+<!-- 新建群聊模态框 -->
+<div class="modal" id="createGroupModal">
+    <div class="modal-content">
+        <span class="close" onclick="closeModal('createGroupModal')">&times;</span>
+        <h3>新建群聊</h3>
+        <input type="file" id="groupAvatar" accept="image/*">
+        <input type="text" id="groupName" placeholder="群名称">
+        <div id="friendCheckList" style="max-height:300px; overflow-y:auto; margin:10px 0;"></div>
+        <button class="primary" onclick="createGroup()">创建</button>
+        <button class="secondary" onclick="closeModal('createGroupModal')">取消</button>
+    </div>
+</div>
+
     <script>
         let currentUser = null;
         let currentFriendId = null;
@@ -1113,6 +1434,90 @@ html.dark-mode .moon-svg { display: none; }
         let messagePollingInterval = null;
         let currentMessages = [];
         let currentFriendIdForMessages = null;
+
+let currentChatType = null; // 'friend' 或 'group'
+let currentChatId = null;
+let currentChatInfo = null;
+
+let groupListPollingInterval = null;
+
+const DEFAULT_AVATAR = 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2240%22%20height%3D%2240%22%20viewBox%3D%220%200%2040%2040%22%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%2220%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E';
+
+async function createGroup() {
+    const groupName = document.getElementById('groupName').value.trim();
+    if (!groupName) { alert('请输入群名称'); return; }
+    const checkboxes = document.querySelectorAll('#friendCheckList input[type="checkbox"]:checked');
+    const members = Array.from(checkboxes).map(cb => cb.value);
+    if (members.length === 0) { alert('请至少选择一位好友'); return; }
+
+    const formData = new FormData();
+    formData.append('groupName', groupName);
+    members.forEach(id => formData.append('members[]', id));
+    formData.append('_csrf', currentUser.csrf_token);
+    const avatarFile = document.getElementById('groupAvatar').files[0];
+    if (avatarFile) {
+        formData.append('group_avatar', avatarFile);
+    }
+
+    const res = await fetch('?action=createGroup', {
+        method: 'POST',
+        body: formData  // 注意：使用 FormData，不设置 Content-Type 头部
+    });
+    const data = await res.json();
+    if (data.success) {
+        alert('群聊创建成功');
+        closeModal('createGroupModal');
+        loadFriends();  // 刷新列表
+    } else {
+        alert('创建失败: ' + data.error);
+    }
+}
+
+async function showCreateGroupModal() {
+    const res = await fetch('?action=getFriends');
+    const data = await res.json();
+    if (data.success) {
+        const container = document.getElementById('friendCheckList');
+        container.innerHTML = '';
+        data.friends.forEach(f => {
+            const div = document.createElement('div');
+            div.className = 'friend-check-item';
+            div.innerHTML = `
+                <input type="checkbox" value="${escapeHtml(f.id)}" id="friend_${escapeHtml(f.id)}">
+                <span>${escapeHtml(f.nickname || f.username)} (ID: ${escapeHtml(f.id)})</span>
+            `;
+            container.appendChild(div);
+        });
+    }
+    document.getElementById('createGroupModal').style.display = 'flex';
+}
+
+function selectGroup(group, element) {
+    document.querySelectorAll('.friend-item').forEach(el => el.classList.remove('active'));
+    element.classList.add('active');
+
+    // 设置群相关变量
+    currentChatType = 'group';
+    currentChatId = group.id;
+    currentChatInfo = group;
+
+    // 清除好友相关变量
+    currentFriendId = null;
+    currentFriendInfo = null;
+    currentFriendIdForMessages = null;
+    currentMessages = [];
+
+    document.getElementById('chatHeader').textContent = `群聊: ${group.name}`;
+    loadGroupMessages(group.id);
+}
+
+async function loadGroupMessages(groupId) {
+    const res = await fetch('?action=getGroupMessages&groupId=' + groupId);
+    const data = await res.json();
+    if (data.success) {
+        renderMessages(data.messages); // 复用好友消息渲染，但需要调整发送者名称
+    }
+}
 
         function showLogin() {
             document.getElementById('loginBox').classList.remove('hidden');
@@ -1205,7 +1610,7 @@ async function doRegister() {
             if (currentUser.avatar) {
                 document.getElementById('avatar').src = currentUser.avatar + '?t=' + Date.now();
             } else {
-                document.getElementById('avatar').src = 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2240%22%20height%3D%2240%22%20viewBox%3D%220%200%2040%2040%22%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%2220%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E';
+                document.getElementById('avatar').src = DEFAULT_AVATAR;
             }
         }
 
@@ -1529,36 +1934,76 @@ async function doRegister() {
             }
         }
 
-        function renderFriendList(friends) {
-            const container = document.getElementById('friendList');
-            container.innerHTML = '';
-            const addBtn = document.createElement('div');
-            addBtn.className = 'friend-item';
-            addBtn.innerHTML = '<span style="flex:1;"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="10566"><path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64z m192 472c0 4.4-3.6 8-8 8H544v152c0 4.4-3.6 8-8 8h-48c-4.4 0-8-3.6-8-8V544H328c-4.4 0-8-3.6-8-8v-48c0-4.4 3.6-8 8-8h152V328c0-4.4 3.6-8 8-8h48c4.4 0 8 3.6 8 8v152h152c4.4 0 8 3.6 8 8v48z" p-id="10567"></path></svg> 添加好友</span>';
-            addBtn.onclick = showAddFriend;
-            container.appendChild(addBtn);
+async function renderFriendList(friends) {
+    const container = document.getElementById('friendList');
+    container.innerHTML = '';
 
-            friends.forEach(f => {
-                const div = document.createElement('div');
-                div.className = 'friend-item';
-                const avatarUrl = f.avatar ? f.avatar : 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2230%22%20height%3D%2230%22%20viewBox%3D%220%200%2030%2030%22%3E%3Ccircle%20cx%3D%2215%22%20cy%3D%2215%22%20r%3D%2215%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E';
-                div.innerHTML = `<img src="${escapeHtml(avatarUrl)}" class="friend-avatar" alt="avatar"><span>${escapeHtml(f.nickname || f.username)}</span>`;
-                div.dataset.id = f.id;
-                div.onclick = () => selectFriend(f, div);
-                container.appendChild(div);
-            });
-        }
+    // 操作栏：添加好友和新建群聊
+    const actionBar = document.createElement('div');
+    actionBar.style.display = 'flex';
+    actionBar.style.justifyContent = 'space-between';
+    actionBar.style.padding = '10px';
+    
+    const addFriendBtn = document.createElement('div');
+    addFriendBtn.className = 'friend-item';
+    addFriendBtn.style.flex = '1';
+    addFriendBtn.innerHTML = '<span style="flex:1;"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="10566"><path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64z m192 472c0 4.4-3.6 8-8 8H544v152c0 4.4-3.6 8-8 8h-48c-4.4 0-8-3.6-8-8V544H328c-4.4 0-8-3.6-8-8v-48c0-4.4 3.6-8 8-8h152V328c0-4.4 3.6-8 8-8h48c4.4 0 8 3.6 8 8v152h152c4.4 0 8 3.6 8 8v48z" p-id="10567"></path></svg> 添加好友</span>';
+    addFriendBtn.onclick = showAddFriend;
+    
+    const createGroupBtn = document.createElement('div');
+    createGroupBtn.className = 'friend-item';
+    createGroupBtn.style.flex = '1';
+    createGroupBtn.innerHTML = '<span style="flex:1;"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="10566"><path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64z m192 472c0 4.4-3.6 8-8 8H544v152c0 4.4-3.6 8-8 8h-48c-4.4 0-8-3.6-8-8V544H328c-4.4 0-8-3.6-8-8v-48c0-4.4 3.6-8 8-8h152V328c0-4.4 3.6-8 8-8h48c4.4 0 8 3.6 8 8v152h152c4.4 0 8 3.6 8 8v48z" p-id="10567"></path></svg> 新建群聊</span>';
+    createGroupBtn.onclick = showCreateGroupModal;
+    
+    actionBar.appendChild(addFriendBtn);
+    actionBar.appendChild(createGroupBtn);
+    container.appendChild(actionBar);
 
-        function selectFriend(friend, element) {
-            document.querySelectorAll('.friend-item').forEach(el => el.classList.remove('active'));
-            element.classList.add('active');
-            currentFriendId = friend.id;
-            currentFriendInfo = friend;
-            currentFriendIdForMessages = friend.id;
-            currentMessages = [];
-            document.getElementById('chatHeader').textContent = `与 ${friend.nickname || friend.username} 聊天中`;
-            loadMessages(friend.id);
-        }
+    // 好友列表标题
+    const friendTitle = document.createElement('div');
+    friendTitle.style.padding = '10px';
+    friendTitle.style.fontWeight = 'bold';
+    friendTitle.style.borderBottom = '1px solid var(--border-color)';
+    friendTitle.textContent = '好友';
+    container.appendChild(friendTitle);
+
+    // 渲染好友
+    friends.forEach(f => {
+        const div = document.createElement('div');
+        div.className = 'friend-item';
+        const avatarUrl = f.avatar ? f.avatar : 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2230%22%20height%3D%2230%22%20viewBox%3D%220%200%2030%2030%22%3E%3Ccircle%20cx%3D%2215%22%20cy%3D%2215%22%20r%3D%2215%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E';
+        div.innerHTML = `<img src="${escapeHtml(avatarUrl)}" class="friend-avatar" alt="avatar"><span>${escapeHtml(f.nickname || f.username)}</span>`;
+        div.dataset.id = f.id;
+        div.onclick = () => selectFriend(f, div);
+        container.appendChild(div);
+    });
+
+    // 加载并渲染群列表
+    await loadAndRenderGroups(container);
+}
+
+function selectFriend(friend, element) {
+    document.querySelectorAll('.friend-item').forEach(el => el.classList.remove('active'));
+    element.classList.add('active');
+
+    // 设置好友相关变量
+    currentFriendId = friend.id;
+    currentFriendInfo = friend;
+    currentFriendIdForMessages = friend.id;
+    currentMessages = [];
+
+    // 设置通用聊天状态
+    currentChatType = 'friend';
+    currentChatId = friend.id;
+    currentChatInfo = null; // 清除可能的群信息
+
+    // 清除群相关变量（避免残留）
+    // （无需额外操作，因为 currentChatType 已明确）
+
+    document.getElementById('chatHeader').textContent = `与 ${friend.nickname || friend.username} 聊天中`;
+    loadMessages(friend.id);
+}
 
         async function loadMessages(friendId) {
             const res = await fetch('?action=getMessages&friendId=' + friendId);
@@ -1587,53 +2032,66 @@ async function doRegister() {
             }
         }
 
-        function appendMessage(msg) {
-            const container = document.getElementById('chatMessages');
-            const div = document.createElement('div');
-            div.className = 'message';
-            if (msg.from === currentUser.id) {
-                div.classList.add('own');
-            }
+function appendMessage(msg) {
+    const container = document.getElementById('chatMessages');
+    const div = document.createElement('div');
+    div.className = 'message';
+    const isMe = (msg.from === currentUser.id);
+    if (isMe) {
+        div.classList.add('own');
+    }
 
-            const senderId = msg.from;
-            const isMe = senderId === currentUser.id;
-            const senderInfo = isMe ? currentUser : currentFriendInfo;
-            let avatarUrl = senderInfo?.avatar || 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2240%22%20height%3D%2240%22%20viewBox%3D%220%200%2040%2040%22%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%2220%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E';
-            let senderName = isMe ? '我' : (senderInfo?.nickname || senderInfo?.username || msg.fromName || msg.from);
+    // 头像
+    const avatarImg = document.createElement('img');
+    avatarImg.className = 'avatar';
+    if (isMe) {
+        avatarImg.src = currentUser.avatar || DEFAULT_AVATAR;
+    } else {
+        avatarImg.src = DEFAULT_AVATAR;
+    }
+    avatarImg.onerror = () => { avatarImg.src = DEFAULT_AVATAR; };
+    div.appendChild(avatarImg);
 
-            const avatarImg = document.createElement('img');
-            avatarImg.className = 'avatar';
-            avatarImg.src = avatarUrl;
-            avatarImg.onerror = () => { avatarImg.src = 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2240%22%20height%3D%2240%22%20viewBox%3D%220%200%2040%2040%22%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%2220%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E'; };
-            div.appendChild(avatarImg);
+    const rightCol = document.createElement('div');
+    rightCol.className = 'right-col';
 
-            const rightCol = document.createElement('div');
-            rightCol.className = 'right-col';
+    // 发送者名称区域，可能包含标签
+    const nameDiv = document.createElement('div');
+    nameDiv.className = 'sender-name';
 
-            const nameDiv = document.createElement('div');
-            nameDiv.className = 'sender-name';
-            nameDiv.textContent = senderName;
-            rightCol.appendChild(nameDiv);
+    // 基础名称文本
+    let senderName = msg.fromName || (isMe ? '我' : msg.from);
+    const nameText = document.createTextNode(senderName);
+    nameDiv.appendChild(nameText);
 
-            const bubble = document.createElement('div');
-            bubble.className = 'bubble';
-            const contentDiv = document.createElement('div');
-            contentDiv.className = 'content';
-            if (msg.type === 'text') {
-                contentDiv.textContent = msg.content;
-            } else if (msg.type === 'image') {
-                const img = document.createElement('img');
-                img.src = '?action=getImage&file=' + encodeURIComponent(msg.content);
-                img.alt = 'image';
-                img.onclick = () => window.open(img.src);
-                contentDiv.appendChild(img);
-            }
-            bubble.appendChild(contentDiv);
-            rightCol.appendChild(bubble);
+    // 如果是群聊且消息发送者是群主，则添加群主标签
+    if (currentChatType === 'group' && currentChatInfo && msg.from === currentChatInfo.creator) {
+        const ownerTag = document.createElement('span');
+        ownerTag.className = 'group-owner-tag';
+        ownerTag.textContent = '群主';
+        nameDiv.appendChild(ownerTag);
+    }
 
-            div.appendChild(rightCol);
-            container.appendChild(div);
-        }
+    rightCol.appendChild(nameDiv);
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'content';
+    if (msg.type === 'text') {
+        contentDiv.textContent = msg.content;
+    } else if (msg.type === 'image') {
+        const img = document.createElement('img');
+        img.src = '?action=getImage&file=' + encodeURIComponent(msg.content);
+        img.alt = 'image';
+        img.onclick = () => window.open(img.src);
+        contentDiv.appendChild(img);
+    }
+    bubble.appendChild(contentDiv);
+    rightCol.appendChild(bubble);
+    div.appendChild(rightCol);
+    container.appendChild(div);
+}
 
         function renderMessages(messages) {
             const container = document.getElementById('chatMessages');
@@ -1683,28 +2141,47 @@ async function doRegister() {
                 .replace(/'/g, "&#039;");
         }
 
-        async function sendMessage() {
-            const input = document.getElementById('messageInput');
-            const content = input.value.trim();
-            if (!content || !currentFriendId) return;
-            const formData = new URLSearchParams();
-            formData.append('friendId', currentFriendId);
-            formData.append('content', content);
-            formData.append('type', 'text');
-            formData.append('_csrf', currentUser.csrf_token);
-            const res = await fetch('?action=sendMessage', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                body: formData
-            });
-            const data = await res.json();
-            if (data.success) {
-                input.value = '';
-                loadMessages(currentFriendId);
-                const container = document.getElementById('chatMessages');
-                container.scrollTop = container.scrollHeight;
-            }
+async function sendMessage() {
+    const input = document.getElementById('messageInput');
+    const content = input.value.trim();
+    if (!content || !currentChatId) return;
+
+    let url, formData;
+    if (currentChatType === 'friend') {
+        url = '?action=sendMessage';
+        formData = new URLSearchParams({
+            friendId: currentChatId,
+            content: content,
+            type: 'text',
+            _csrf: currentUser.csrf_token
+        });
+    } else if (currentChatType === 'group') {
+        url = '?action=sendGroupMessage';
+        formData = new URLSearchParams({
+            groupId: currentChatId,
+            content: content,
+            type: 'text',
+            _csrf: currentUser.csrf_token
+        });
+    } else {
+        return;
+    }
+
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: formData
+    });
+    const data = await res.json();
+    if (data.success) {
+        input.value = '';
+        if (currentChatType === 'friend') {
+            loadMessages(currentChatId);
+        } else {
+            loadGroupMessages(currentChatId);
         }
+    }
+}
 
         document.getElementById('messageInput').addEventListener('keydown', function(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -1780,14 +2257,91 @@ async function doRegister() {
             }
         }
 
-        function startMessagePolling() {
-            if (messagePollingInterval) clearInterval(messagePollingInterval);
-            messagePollingInterval = setInterval(() => {
-                if (currentFriendId) {
-                    loadMessages(currentFriendId);
-                }
-            }, 2000);
+function startMessagePolling() {
+    if (messagePollingInterval) clearInterval(messagePollingInterval);
+    messagePollingInterval = setInterval(() => {
+        if (currentChatId) {
+            if (currentChatType === 'friend') loadMessages(currentChatId);
+            else if (currentChatType === 'group') loadGroupMessages(currentChatId);
         }
+    }, 2000);
+
+    // 每30秒刷新群列表（仅当登录状态）
+    if (groupListPollingInterval) clearInterval(groupListPollingInterval);
+    groupListPollingInterval = setInterval(() => {
+        refreshGroupList();
+    }, 30000);
+}
+
+/**
+ * 加载并渲染群列表（追加到容器末尾）
+ * @param {HTMLElement} container 侧边栏容器
+ */
+async function loadAndRenderGroups(container) {
+    // 移除旧的群标题和群列表（如果存在）
+    const oldGroupTitle = container.querySelector('.group-title');
+    if (oldGroupTitle) {
+        let next = oldGroupTitle.nextSibling;
+        while (next) {
+            const toRemove = next;
+            next = next.nextSibling;
+            toRemove.remove();
+        }
+        oldGroupTitle.remove();
+    }
+
+    const res = await fetch('?action=getGroupList');
+    if (!res.ok) {
+        console.error('获取群列表失败', res.status);
+        return;
+    }
+    const data = await res.json();
+    if (!data.success) {
+        console.error('获取群列表失败', data.error);
+        return;
+    }
+
+    // 群标题
+    const groupTitle = document.createElement('div');
+    groupTitle.className = 'group-title';
+    groupTitle.style.padding = '10px';
+    groupTitle.style.fontWeight = 'bold';
+    groupTitle.style.borderBottom = '1px solid var(--border-color)';
+    groupTitle.style.borderTop = '1px solid var(--border-color)';
+    groupTitle.style.marginTop = '0px';
+    groupTitle.textContent = '群聊';
+    container.appendChild(groupTitle);
+
+    // 渲染每个群
+    data.groups.forEach(g => {
+        const div = document.createElement('div');
+        div.className = 'friend-item';
+        const avatarUrl = g.avatar ? g.avatar : 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2230%22%20height%3D%2230%22%20viewBox%3D%220%200%2030%2030%22%3E%3Ccircle%20cx%3D%2215%22%20cy%3D%2215%22%20r%3D%2215%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E';
+        div.innerHTML = `<img src="${escapeHtml(avatarUrl)}" class="friend-avatar" alt="avatar"><span>👥 ${escapeHtml(g.name)}</span>`;
+        div.dataset.groupId = g.id;
+        div.onclick = () => selectGroup(g, div);
+        container.appendChild(div);
+    });
+}
+
+async function refreshGroupList() {
+    const container = document.getElementById('friendList');
+    // 查找群标题元素，如果存在则移除旧群列表并重新添加
+    const oldGroupTitle = container.querySelector('.group-title');
+    await loadAndRenderGroups(container);
+    if (oldGroupTitle) {
+        // 移除从群标题开始到末尾的所有元素（群标题及其后的群项）
+        let next = oldGroupTitle.nextSibling;
+        while (next) {
+            const toRemove = next;
+            next = next.nextSibling;
+            toRemove.remove();
+        }
+        oldGroupTitle.remove();
+    }
+    // 重新加载群列表（追加到末尾）
+    await loadAndRenderGroups(container);
+}
 
         function stopMessagePolling() {
             if (messagePollingInterval) {
