@@ -1252,7 +1252,8 @@ html.dark-mode .moon-svg { display: none; }
         </div>
         <div class="box hidden" id="registerBox">
             <h2>注册</h2>
-            <input type="text" id="regUsername" placeholder="用户名 (登录用)">
+            <input type="text" id="regUsername" placeholder="用户名 [登录用]">
+            <p><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="4567"><path d="M512 179.891892c-184.043243 0-332.108108 148.064865-332.108108 332.108108s148.064865 332.108108 332.108108 332.108108 332.108108-148.064865 332.108108-332.108108-148.064865-332.108108-332.108108-332.108108z m33.210811 545.210811c0 6.918919-5.535135 12.454054-12.454054 12.454054h-44.281081c-6.918919 0-12.454054-5.535135-12.454054-12.454054v-44.281081c0-6.918919 5.535135-12.454054 12.454054-12.454054h44.281081c6.918919 0 12.454054 5.535135 12.454054 12.454054v44.281081z m1.383784-121.772973c0 6.918919-5.535135 11.07027-12.454054 11.07027h-45.664865c-6.918919 0-11.07027-5.535135-12.454054-11.07027L470.486486 316.886486c0-6.918919 5.535135-12.454054 12.454055-12.454054h55.351351c6.918919 0 12.454054 5.535135 12.454054 12.454054l-4.151351 286.443244z" fill="currentColor" p-id="4568"></path></svg><font color="red"> 用户名不等于昵称！！！</font></p>
             <input type="password" id="regPassword" placeholder="密码">
             <input type="file" id="regAvatar" accept="image/*">
             <button onclick="doRegister()">注册</button>
@@ -1287,7 +1288,7 @@ html.dark-mode .moon-svg { display: none; }
                 <a onclick="showFriendRequests()">好友申请 <span id="requestCount" style="background:#f56c6c; color:white; border-radius:10px; padding:2px 6px; margin-left:5px;">0</span></a>
                 <a onclick="deleteCurrentFriend()">删除好友</a>
                 <a onclick="showChangeAvatar()">修改头像</a>
-                <a onclick="showChangeNickname()">修改用户名</a>
+                <a onclick="showChangeNickname()">修改昵称</a>
                 <a onclick="showChangePassword()">修改密码</a>
                 <a onclick="showEditProfile()">修改资料</a>
                 <a onclick="showEditBio()">用户简介</a>
@@ -1296,6 +1297,7 @@ html.dark-mode .moon-svg { display: none; }
             </div>
             <div class="dropdown-menu" id="leftMenu" style="left: 20px; right: auto; display: none;">
                 <a href="#" onclick="goToAnnouncement()">公告</a>
+                <a href="#" onclick="goToMyInfo(); return false;">我的信息</a>
                 <a href="#" onclick="goToUpload(); return false;">压缩包上传</a>
                 <a href="#" onclick="goToNTwiki(); return false;">NTwiki</a>
                 <a href="#" onclick="goToVIP(); return false;">VIP用户</a>
@@ -1648,6 +1650,7 @@ async function doRegister() {
         function goToAnnouncement() { window.location.href = '/An/'; }
         function goToNTwiki() { window.location.href = '/NTwiki/'; }
         function goToVIP() { window.location.href = '/VIP/'; }
+        function goToMyInfo() { window.location.href = '/MyInfo/'; }
 
         function closeModal(id) {
             document.getElementById(id).style.display = 'none';
