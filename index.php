@@ -2605,6 +2605,13 @@ function handleRegister() {
     ob_clean(); // 清除之前的输出
     $username = $_POST['username'] ?? '';
     $password = $_POST['password'] ?? '';
+
+    // 新增：用户名长度限制（1~15字符，支持中文）
+    $len = mb_strlen($username, 'UTF-8');
+    if ($len < 1 || $len > 15) {
+        return ['success' => false, 'error' => '用户名长度必须在1到15个字符之间'];
+    }
+
     if (!$username || !$password) {
         return ['success' => false, 'error' => '用户名和密码不能为空'];
     }
@@ -2786,14 +2793,31 @@ function handleAvatarUpload($file) {
     if ($file['size'] > 2 * 1024 * 1024) {
         return ['success' => false, 'error' => '图片不能超过2MB'];
     }
-    $finfo = finfo_open(FILEINFO_MIME_TYPE);
-    $mime = finfo_file($finfo, $file['tmp_name']);
-    finfo_close($finfo);
-    $allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    if (!in_array($mime, $allowed)) {
-        return ['success' => false, 'error' => '只允许上传JPG、PNG、GIF、WEBP格式的图片'];
+
+    // 使用 getimagesize 验证图片真实性
+    $imageInfo = @getimagesize($file['tmp_name']);
+    if ($imageInfo === false) {
+        return ['success' => false, 'error' => '文件不是有效的图片'];
     }
-    $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+
+    // 允许的 MIME 类型（与 getimagesize 结果一致）
+    $allowedMime = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!in_array($imageInfo['mime'], $allowedMime)) {
+        return ['success' => false, 'error' => '只允许上传 JPG、PNG、GIF、WEBP 格式的图片'];
+    }
+
+    // 可选：检查扩展名与 MIME 是否匹配
+    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    $extMap = [
+        'image/jpeg' => ['jpg', 'jpeg'],
+        'image/png'  => ['png'],
+        'image/gif'  => ['gif'],
+        'image/webp' => ['webp']
+    ];
+    if (!in_array($ext, $extMap[$imageInfo['mime']])) {
+        return ['success' => false, 'error' => '文件扩展名与真实类型不匹配'];
+    }
+
     $filename = uniqid() . '.' . $ext;
     $dest = AVATAR_DIR . '/' . $filename;
     if (!move_uploaded_file($file['tmp_name'], $dest)) {
@@ -3085,28 +3109,37 @@ function handleUploadImage() {
     if (!isset($_SESSION['user_id'])) return ['success' => false, 'error' => '未登录'];
     if (!checkCSRF()) return ['success' => false, 'error' => 'CSRF令牌无效'];
     if (!isset($_FILES['image'])) return ['success' => false, 'error' => '没有文件'];
+
     $file = $_FILES['image'];
     if ($file['error'] !== UPLOAD_ERR_OK) return ['success' => false, 'error' => '上传错误'];
     if ($file['size'] > 10 * 1024 * 1024) {
         return ['success' => false, 'error' => '图片不能超过10MB'];
     }
-    $finfo = finfo_open(FILEINFO_MIME_TYPE);
-    $mime = finfo_file($finfo, $file['tmp_name']);
-    finfo_close($finfo);
-    $allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    if (!in_array($mime, $allowed)) {
-        return ['success' => false, 'error' => '只允许上传图片'];
+
+    // 使用 getimagesize 验证图片真实性
+    $imageInfo = @getimagesize($file['tmp_name']);
+    if ($imageInfo === false) {
+        return ['success' => false, 'error' => '文件不是有效的图片'];
     }
+
+    $allowedMime = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!in_array($imageInfo['mime'], $allowedMime)) {
+        return ['success' => false, 'error' => '只允许上传 JPG、PNG、GIF、WEBP 格式的图片'];
+    }
+
     $md5 = md5_file($file['tmp_name']);
     $dest = UPLOAD_DIR . '/' . $md5;
     if (!file_exists($dest)) {
-        move_uploaded_file($file['tmp_name'], $dest);
+        if (!move_uploaded_file($file['tmp_name'], $dest)) {
+            return ['success' => false, 'error' => '保存文件失败'];
+        }
     }
-    $map = json_decode(file_get_contents(FILE_NAME_JSON), true);
+
+    $map = json_decode(file_get_contents(FILE_NAME_JSON), true) ?: [];
     $map[] = [
         'original' => $file['name'],
         'md5' => $md5,
-        'mime' => $mime
+        'mime' => $imageInfo['mime']   // 使用验证后的真实 MIME
     ];
     file_put_contents(FILE_NAME_JSON, json_encode($map), LOCK_EX);
     return ['success' => true, 'fileId' => $md5];
