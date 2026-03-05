@@ -102,7 +102,7 @@ function formatFileTime($timestamp) {
 }
 
 function updateMdTimeJson($docs) {
-    $jsonFile = __DIR__ . '/MdTimeData.json';
+    $jsonFile = __DIR__ . '/MdData.json';  // 修改文件名
     $oldData = [];
     if (file_exists($jsonFile)) {
         $content = file_get_contents($jsonFile);
@@ -117,13 +117,19 @@ function updateMdTimeJson($docs) {
         $name = $doc['name'];
         $mtime = $doc['mtime'];
         if (isset($oldData[$name])) {
-            $ctime = $oldData[$name]['ctime'];
+            $ctime = $oldData[$name]['ctime'] ?? $now;
+            $ocd   = $oldData[$name]['ocd'] ?? false;   // 保留原有ocd或默认false
+            $ocwd   = $oldData[$name]['ocwd'] ?? false;   // 保留原有ocd或默认false
         } else {
             $ctime = $now;
+            $ocd   = false;                              // 新文档默认false
+            $ocwd   = false;                              // 新文档默认false
         }
         $newData[$name] = [
             'ctime' => $ctime,
-            'mtime' => $mtime
+            'mtime' => $mtime,
+            'ocd'   => $ocd,                             // 写入ocd字段
+            'ocwd'   => $ocwd,                             // 写入ocd字段
         ];
     }
     @file_put_contents($jsonFile, json_encode($newData, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
@@ -165,12 +171,14 @@ if (isset($_GET['action']) && $_GET['action'] === 'get' && isset($_GET['doc'])) 
 
     $ctime = null;
     $mtime = null;
-    $jsonFile = __DIR__ . '/MdTimeData.json';
+    $jsonFile = __DIR__ . '/MdData.json';
     if (file_exists($jsonFile)) {
         $jsonData = json_decode(file_get_contents($jsonFile), true);
         if (isset($jsonData[$docParam])) {
             $ctime = $jsonData[$docParam]['ctime'];
             $mtime = $jsonData[$docParam]['mtime'];
+            $ocd   = $jsonData[$docParam]['ocd'] ?? false;   // 读取ocd字段
+            $ocwd   = $jsonData[$docParam]['ocwd'] ?? false;   // 读取ocd字段
         }
     }
     if ($ctime === null) {
@@ -190,6 +198,18 @@ if (isset($_GET['action']) && $_GET['action'] === 'get' && isset($_GET['doc'])) 
     }
 
     $footerHtml = '<div class="doc-footer-time"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="4749"><path d="M914.181742 251.621027L672.174208 10.295205A34.085568 34.085568 0 0 0 645.587465 0.069535H134.303944a34.085568 34.085568 0 0 0-34.085569 34.085568v954.395906a34.085568 34.085568 0 0 0 34.085569 34.085568h755.336188a34.085568 34.085568 0 0 0 34.085569-34.085568V272.754079a34.085568 34.085568 0 0 0-9.543959-21.133052z m-92.712746 3.408557H666.720517V100.962816zM168.389512 954.465441V68.240671h430.159869v220.874481a34.085568 34.085568 0 0 0 34.085568 34.085568h222.919615V954.465441z" fill="currentColor" p-id="4750"></path><path d="M713.758601 545.438624H548.10274V379.782763a34.085568 34.085568 0 0 0-68.171136 0V545.438624H304.731784a34.085568 34.085568 0 0 0-34.085568 34.085568 33.403857 33.403857 0 0 0 4.771979 16.361073 34.085568 34.085568 0 0 0 31.358723 21.133052h170.427841v170.42784a34.085568 34.085568 0 1 0 68.171136 0V618.38174h170.42784a34.085568 34.085568 0 0 0 34.085568-34.085568 33.403857 33.403857 0 0 0-4.771979-16.361073A34.085568 34.085568 0 0 0 713.758601 545.438624z" fill="currentColor" p-id="4751"></path></svg> 创建时间：' . $timeStrCreate . '  <svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5477"><path d="M775.84 392.768l-155.2-172.352L160.768 643.264l-38.368 187.936 190.56-12.832zM929.952 229.952l-131.2-150.944-0.288-0.32a16 16 0 0 0-22.592-0.96l-131.168 120.576 155.168 172.352 128.832-118.464a15.936 15.936 0 0 0 1.248-22.24zM96 896h832v64H96z" p-id="5478"></path></svg> 最后编辑：' . $timeStrMod . '</div>';
+    if ($ocd) {
+        $footerHtml .= '<div class="doc-ocd">' .
+            '<svg class="icon" style="width:1em;height:1em;vertical-align:middle;fill:currentColor;overflow:hidden;" viewBox="0 0 1024 1024">' .
+            '<path d="M512 64L128 192v384c0 256 384 384 384 384s384-128 384-384V192L512 64z m0 128c70.4 0 128 57.6 128 128s-57.6 128-128 128-128-57.6-128-128 57.6-128 128-128z m0 512c-85.333333 0-160-42.666667-213.333333-106.666667 0-70.666667 128-106.666667 213.333333-106.666666s213.333333 36 213.333333 106.666666c-53.333333 64-128 106.666667-213.333333 106.666667z" fill="currentColor"></path>' .
+            '</svg> 文档经过官方认证</div>';
+    }
+    if ($ocwd) {
+        $footerHtml .= '<div class="doc-ocd">' .
+            '<svg class="icon" style="width:1em;height:1em;vertical-align:middle;fill:currentColor;overflow:hidden;" viewBox="0 0 1024 1024">' .
+            '<path d="M512 64L128 192v384c0 256 384 384 384 384s384-128 384-384V192L512 64z m0 128c70.4 0 128 57.6 128 128s-57.6 128-128 128-128-57.6-128-128 57.6-128 128-128z m0 512c-85.333333 0-160-42.666667-213.333333-106.666667 0-70.666667 128-106.666667 213.333333-106.666666s213.333333 36 213.333333 106.666666c-53.333333 64-128 106.666667-213.333333 106.666667z" fill="currentColor"></path>' .
+            '</svg> 官方认证废物文档</div>';
+    }
     echo $bodyHtml . $footerHtml;
     exit;
 }
@@ -306,7 +326,25 @@ if (is_dir(DOCS_DIR)) {
             color: #475569;
         }
 
+        .icon-btns {
+            font-size: 20px;
+            cursor: pointer;
+            user-select: none;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+            transition: background-color 0.2s;
+            color: #475569;
+        }
+
         body.dark .icon-btn {
+            color: #cbd5e1;
+        }
+
+        body.dark .icon-btns {
             color: #cbd5e1;
         }
 
@@ -345,6 +383,7 @@ if (is_dir(DOCS_DIR)) {
         }
 
         .doc-item {
+            position: relative;           /* 为伪元素定位 */
             padding: 10px 16px;
             margin: 4px 0;
             border-radius: 0.9px;
@@ -370,6 +409,39 @@ if (is_dir(DOCS_DIR)) {
         body.dark .doc-item:hover {
             background-color: #2d3a4f;
         }
+
+/* 蓝色竖线伪元素 */
+.doc-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 3px;
+    height: 100%;
+    background-color: #4f46e5;        /* 蓝色 */
+    transform: scaleY(0);              /* 默认收起（高度为0） */
+    transform-origin: center;          /* 从中心缩放 */
+    transition: transform 0.2s ease;
+    z-index: 1;
+}
+
+body.dark .doc-item::before {
+    background-color: #818cf8;
+}
+
+/* 激活状态：竖线展开，字体变蓝 */
+.doc-item.active {
+    color: #4f46e5;
+    font-weight: 600;
+}
+
+body.dark .doc-item.active {
+    color: #a5b4fc;
+}
+
+.doc-item.active::before {
+    transform: scaleY(1);              /* 展开 */
+}
 
         .doc-item.active {
             background-color: #eef2ff;
@@ -899,6 +971,95 @@ if (is_dir(DOCS_DIR)) {
         .success {
             color: #16a34a;
         }
+
+/* 汉堡图标容器 */
+.hamburger {
+    display: inline-block;
+    width: 0.9em;          /* 与图标按钮字体大小协调 */
+    height: 1.2em;
+    position: relative;
+}
+
+/* 三条线的公共样式 */
+.hamburger::before,
+.hamburger::after,
+.hamburger span {
+    content: '';
+    position: absolute;
+    width: 100%;
+    height: 2px;
+    background-color: currentColor; /* 跟随文字颜色 */
+    left: 0;
+    transition: transform 0.25s ease, opacity 0.25s ease;
+}
+
+/* 上横线 */
+.hamburger::before {
+    top: 0.2em;             /* 顶部距离，可根据实际微调 */
+}
+
+/* 中间横线（用 span 元素） */
+.hamburger span {
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+/* 下横线 */
+.hamburger::after {
+    bottom: 0.2em;
+}
+
+/* 侧边栏展开时（collapsed 类不存在），汉堡变为叉号 */
+.sidebar:not(.collapsed) .hamburger::before {
+    transform: rotate(45deg) translate(0.25em, 0.25em);
+}
+.sidebar:not(.collapsed) .hamburger span {
+    opacity: 0;              /* 中间线消失 */
+}
+.sidebar:not(.collapsed) .hamburger::after {
+    transform: rotate(-45deg) translate(0.25em, -0.25em);
+}
+
+/* 设置图标旋转动画 */
+.settings-icon svg.rotate {
+    animation: rotate90 0.8s ease;
+}
+
+@keyframes rotate90 {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(180deg); }
+}
+
+/* 内容区域淡入淡出动画 */
+.content-area.fade-out .markdown-body {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+.content-area .markdown-body {
+    transition: opacity 0.3s ease;
+}
+
+/* 文档项点击反馈（瞬间缩放） */
+.doc-item:active {
+    transform: scale(0.98);
+    transition: transform 0.1s;
+}
+
+/* 官方认证标记样式 */
+.doc-ocd {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed #ccc;
+    font-size: 0.9rem;
+    color: #4f46e5;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+body.dark .doc-ocd {
+    color: #a5b4fc;
+    border-top-color: #334155;
+}
     </style>
 </head>
 <body>
@@ -910,7 +1071,7 @@ if (is_dir(DOCS_DIR)) {
     <div class="app-container">
         <div class="sidebar collapsed" id="sidebar">
             <div class="top-icons">
-                <span class="icon-btn" id="menuToggle" title="展开/折叠菜单">☰</span>
+                <span class="icon-btn" id="menuToggle" title="展开/折叠菜单"><span class="hamburger"><span></span></span></span>
                 <span class="icon-btn" id="darkModeToggle" title="暗色模式">
                     <svg class="sun-svg" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="787">
                         <path d="M501.48 493.55m-233.03 0a233.03 233.03 0 1 0 466.06 0 233.03 233.03 0 1 0-466.06 0Z" fill="#F9C626" p-id="788"></path>
@@ -925,10 +1086,10 @@ if (is_dir(DOCS_DIR)) {
                     </svg>
                 </span>
                 <span class="icon-btn" id="homeBtn" title="返回首页">
-                    <svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="2891"><path d="M908.266667 515.786667a5.333333 5.333333 0 0 0 0-7.52l-348.8-348.8-49.066667-49.066667a5.333333 5.333333 0 0 0-7.466667 0L105.066667 508.266667a5.333333 5.333333 0 0 0 0 7.52l45.28 45.28a5.333333 5.333333 0 0 0 7.52 0l1.76-1.813334a5.333333 5.333333 0 0 1 9.066666 3.786667V912a5.333333 5.333333 0 0 0 5.333334 5.333333h665.28a5.333333 5.333333 0 0 0 5.333333-5.333333v-349.013333a5.333333 5.333333 0 0 1 9.066667-3.733334l1.76 1.813334a5.333333 5.333333 0 0 0 7.52 0zM764.64 842.666667H248.693333a5.333333 5.333333 0 0 1-5.333333-5.333334V477.706667a5.333333 5.333333 0 0 1 1.6-3.733334L502.933333 216a5.333333 5.333333 0 0 1 7.466667 0l257.973333 257.973333a5.333333 5.333333 0 0 1 1.6 3.733334V837.333333a5.333333 5.333333 0 0 1-5.333333 5.333334zM405.333333 863.36h202.666667v-222.933333a5.6 5.6 0 0 0-5.333333-5.866667H410.666667a5.6 5.6 0 0 0-5.333334 5.866667z" p-id="2892"></path></svg>
+                    <svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="7257"><path d="M424.319032 885.693004 424.319032 620.123556 601.364307 620.123556 601.364307 885.693004 822.671669 885.693004 822.671669 531.60143 955.455881 531.60143 512.841158 133.24777 70.226434 531.60143 203.01167 531.60143 203.01167 885.693004Z" fill="currentColor" p-id="7258"></path></svg>
                 </span>
                 <!-- 新增：设置按钮，仅在侧边栏折叠时显示 -->
-                <span class="icon-btn settings-icon" id="settingsBtn" title="个性化设置">
+                <span class="icon-btns settings-icon" id="settingsBtn" title="个性化设置">
                     <svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="1199"><path d="M892.375523 560.725628L895.422779 511.969527 892.375523 460.166171 999.029492 377.890251C1011.218518 368.748482 1011.218518 356.559457 1005.124005 344.370432L904.564548 167.629568C898.470035 155.440543 883.233754 152.393287 874.091985 155.440543L746.107221 207.2439A310.82014 310.82014 0 0 0 657.736789 158.487799L639.453251 21.361267C639.453251 9.172241 627.264226 0.030473 615.075201 0.030473H410.909031a30.472563 30.472563 0 0 0-27.425307 21.330794L365.200186 158.487799a295.583859 295.583859 0 0 0-85.323175 48.756101L151.892247 155.440543C139.703222 152.393287 127.514197 155.440543 121.419684 167.629568L17.812971 344.370432C11.718458 356.559457 14.765714 368.748482 23.907483 377.890251l109.701226 82.27592-6.094512 51.803356 6.094512 48.756101-109.701226 85.323176C14.765714 652.143316 11.718458 667.379598 17.812971 679.568623l103.606713 176.740864c6.094513 9.141769 18.283538 15.236281 30.472563 9.141769L279.877011 816.695155a390.048804 390.048804 0 0 0 85.323175 48.756101l18.283538 137.126532A27.425307 27.425307 0 0 0 410.909031 1023.908582h204.16617C627.264226 1023.908582 636.405995 1014.766813 639.453251 1002.577788L657.736789 865.451256A411.379598 411.379598 0 0 0 746.107221 816.695155l127.984764 48.756101c9.141769 6.094513 24.37805 0 30.472563-9.141769L1005.124005 679.568623C1011.218518 667.379598 1008.171261 652.143316 999.029492 646.048804L892.375523 560.725628zM511.468488 691.757648A179.78812 179.78812 0 0 1 334.727624 511.969527a176.740864 176.740864 0 1 1 356.528984 0 182.835377 182.835377 0 0 1-179.78812 179.788121z" p-id="1200"></path></svg>
                 </span>
             </div>
@@ -1003,6 +1164,8 @@ if (is_dir(DOCS_DIR)) {
 
             let autoSwitchInterval = null;
             let currentWallpaperUrl = null;
+
+let rotateTimer = null; // 用于设置图标旋转动画的定时器
 
             // 应用背景壁纸到 content-area
             function applyWallpaper(url) {
@@ -1092,8 +1255,8 @@ if (is_dir(DOCS_DIR)) {
 
             // 更新菜单图标（折叠/展开）
             function updateMenuIcon() {
-                const isCollapsed = sidebar.classList.contains('collapsed');
-                menuToggle.textContent = isCollapsed ? '☰' : '✕';
+                //const isCollapsed = sidebar.classList.contains('collapsed');
+                //menuToggle.textContent = isCollapsed ? '☰' : '✕';
             }
 
             function toggleSidebar() {
@@ -1124,18 +1287,31 @@ if (is_dir(DOCS_DIR)) {
             });
 
             // 设置按钮点击
-            settingsBtn.addEventListener('click', () => {
-                if (!isLoggedIn) {
-                    alert('请先登录以使用个性化设置');
-                    return;
-                }
-                // 填充当前设置到表单
-                document.getElementById('useWallpaper').checked = userSettings.useWallpaper;
-                document.getElementById('useNoFlowWallpaper').checked = userSettings.useNoFlowWallpaper;
-                document.getElementById('wallpaperUrls').value = userSettings.wallpaperUrls.join('\n');
-                document.getElementById('autoSwitch').checked = userSettings.autoSwitch;
-                document.getElementById('settingsModal').style.display = 'flex';
-            });
+settingsBtn.addEventListener('click', () => {
+    if (!isLoggedIn) {
+        alert('请先登录以使用个性化设置');
+        return;
+    }
+
+    // 触发旋转动画
+    const iconSvg = settingsBtn.querySelector('svg');
+    if (iconSvg) {
+        // 清除之前的定时器，避免动画被提前中断
+        if (rotateTimer) clearTimeout(rotateTimer);
+        iconSvg.classList.add('rotate');
+        rotateTimer = setTimeout(() => {
+            iconSvg.classList.remove('rotate');
+            rotateTimer = null;
+        }, 800); // 与动画时长一致
+    }
+
+    // 填充当前设置到表单
+    document.getElementById('useWallpaper').checked = userSettings.useWallpaper;
+    document.getElementById('useNoFlowWallpaper').checked = userSettings.useNoFlowWallpaper;
+    document.getElementById('wallpaperUrls').value = userSettings.wallpaperUrls.join('\n');
+    document.getElementById('autoSwitch').checked = userSettings.autoSwitch;
+    document.getElementById('settingsModal').style.display = 'flex';
+});
 
             // 关闭模态框
             window.closeModal = function(id) {
@@ -1266,27 +1442,57 @@ if (is_dir(DOCS_DIR)) {
                 });
             }
 
-            async function loadDocument(docName) {
-                if (!docName) return;
-                const markdownDiv = document.getElementById('markdownRenderer');
-                markdownDiv.innerHTML = '<div class="loader"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="7922"><path d="M674.133333 878.933333l-98.133333-102.4c128-17.066667 230.4-123.733333 230.4-251.733333 0-123.733333-93.866667-230.4-217.6-251.733333l-89.6-89.6h38.4c196.266667 0 354.133333 153.6 354.133333 341.333333 0 128-76.8 243.2-183.466666 298.666667v85.333333l-34.133334-29.866667z m-93.866666-17.066666c-12.8 0-29.866667 4.266667-46.933334 4.266666-196.266667 0-354.133333-153.6-354.133333-341.333333 0-128 76.8-243.2 183.466667-298.666667V128l55.466666 55.466667 85.333334 85.333333c-132.266667 12.8-234.666667 123.733333-234.666667 256 0 128 98.133333 234.666667 226.133333 251.733333l85.333334 85.333334z" fill="currentColor" p-id="7923"></path></svg> 加载中...</div>';
-                try {
-                    const response = await fetch(`?action=get&doc=${encodeURIComponent(docName)}`);
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}`);
-                    }
-                    const html = await response.text();
-                    markdownDiv.innerHTML = html;
-                    addCopyButtonsToCodeBlocks();
-                    window.location.hash = docName;
-                    document.querySelectorAll('.doc-item').forEach(item => {
-                        const dataDoc = item.getAttribute('data-doc');
-                        item.classList.toggle('active', dataDoc === docName);
-                    });
-                } catch (e) {
-                    markdownDiv.innerHTML = `<div class="error" style="color:#b91c1c; padding: 2rem;"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="7302"><path d="M512 981.333333C252.8 981.333333 42.666667 771.2 42.666667 512S252.8 42.666667 512 42.666667s469.333333 210.133333 469.333333 469.333333-210.133333 469.333333-469.333333 469.333333z m44.245333-469.333333l159.914667-159.914667a31.274667 31.274667 0 1 0-44.245333-44.245333L512 467.754667 352.085333 307.84a31.274667 31.274667 0 1 0-44.245333 44.245333L467.754667 512l-159.914667 159.914667a31.274667 31.274667 0 1 0 44.245333 44.245333L512 556.245333l159.914667 159.914667a31.274667 31.274667 0 1 0 44.245333-44.245333L556.245333 512z" fill="#F5222D" p-id="7303"></path></svg> 加载失败: ${e.message}</div>`;
-                }
-            }
+              //  markdownDiv.innerHTML = '<div class="loader"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="7922"><path d="M674.133333 878.933333l-98.133333-102.4c128-17.066667 230.4-123.733333 230.4-251.733333 0-123.733333-93.866667-230.4-217.6-251.733333l-89.6-89.6h38.4c196.266667 0 354.133333 153.6 354.133333 341.333333 0 128-76.8 243.2-183.466666 298.666667v85.333333l-34.133334-29.866667z m-93.866666-17.066666c-12.8 0-29.866667 4.266667-46.933334 4.266666-196.266667 0-354.133333-153.6-354.133333-341.333333 0-128 76.8-243.2 183.466667-298.666667V128l55.466666 55.466667 85.333334 85.333333c-132.266667 12.8-234.666667 123.733333-234.666667 256 0 128 98.133333 234.666667 226.133333 251.733333l85.333334 85.333334z" fill="currentColor" p-id="7923"></path></svg> 加载中...</div>';
+
+
+let currentAbortController = null; // 用于取消前一个请求
+
+async function loadDocument(docName) {
+    if (!docName) return;
+
+    // 如果已经有正在进行的请求，取消它
+    if (currentAbortController) {
+        currentAbortController.abort();
+    }
+
+    const markdownDiv = document.getElementById('markdownRenderer');
+    const contentArea = document.getElementById('contentArea');
+
+    // 开始淡出
+    contentArea.classList.add('fade-out');
+
+    // 创建新的 AbortController
+    currentAbortController = new AbortController();
+    const { signal } = currentAbortController;
+
+    try {
+        const response = await fetch(`?action=get&doc=${encodeURIComponent(docName)}`, { signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const html = await response.text();
+
+        // 更新内容
+        markdownDiv.innerHTML = html;
+        addCopyButtonsToCodeBlocks();
+        window.location.hash = docName;
+
+        // 高亮当前文档项
+        document.querySelectorAll('.doc-item').forEach(item => {
+            const dataDoc = item.getAttribute('data-doc');
+            item.classList.toggle('active', dataDoc === docName);
+        });
+
+        // 淡入新内容
+        contentArea.classList.remove('fade-out');
+    } catch (err) {
+        // 如果是手动取消的请求，不显示错误
+        if (err.name === 'AbortError') return;
+
+        contentArea.classList.remove('fade-out');
+        markdownDiv.innerHTML = `<div class="error">加载失败: ${err.message}</div>`;
+    } finally {
+        currentAbortController = null; // 请求完成或取消后清空
+    }
+}
 
             docList.addEventListener('click', (e) => {
                 const target = e.target.closest('.doc-item');
