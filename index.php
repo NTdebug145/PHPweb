@@ -25,6 +25,8 @@ define('GROUPS_FILE', DATA_DIR . '/groups.json');
 define('GROUP_MSG_DIR', DATA_DIR . '/groups'); // 存放群消息文件的目录
 define('GROUP_AVATAR_DIR', DATA_DIR . '/group_avatars');
 
+define('USERS_LOCK_FILE', DATA_DIR . '/users.lock');
+
 define('ROOT_DIR', __DIR__);   // 网站根目录
 
 define('TEMP_DIR', DATA_DIR . '/tmp');          // 临时目录用于分块上传
@@ -71,8 +73,9 @@ foreach ([DATA_DIR, AVATAR_DIR, UPLOAD_DIR, UPLOAD_DIR . '/FileName'] as $dir) {
 }
 
 // 初始化JSON文件
-if (!file_exists(USERS_FILE)) {
-    file_put_contents(USERS_FILE, json_encode([]));
+// 初始化用户分片文件：如果没有 users_*.json，则创建 users_1.json
+if (!glob(DATA_DIR . '/users_*.json')) {
+    file_put_contents(DATA_DIR . '/users_1.json', json_encode([]));
 }
 if (!file_exists(FILE_NAME_JSON)) {
     file_put_contents(FILE_NAME_JSON, json_encode([]));
@@ -2933,12 +2936,49 @@ document.getElementById('avatar').addEventListener('click', function(e) {
 // ==================== 后端函数（已修复漏洞并实现双层加密） ====================
 
 function getUsers() {
-    $content = file_get_contents(USERS_FILE);
-    return json_decode($content, true) ?: [];
+    $users = [];
+    $files = glob(DATA_DIR . '/users_*.json');
+    foreach ($files as $file) {
+        $content = file_get_contents($file);
+        $data = json_decode($content, true);
+        if (is_array($data)) {
+            $users = array_merge($users, $data);
+        }
+    }
+    // 按ID排序，保证一致性（可选）
+    usort($users, function($a, $b) {
+        return $a['id'] <=> $b['id'];
+    });
+    return $users;
 }
 
 function saveUsers($users) {
-    file_put_contents(USERS_FILE, json_encode($users), LOCK_EX);
+    // 获取全局锁，防止并发写入冲突
+    $lockFile = fopen(USERS_LOCK_FILE, 'c');
+    if (!$lockFile) {
+        throw new Exception('无法获取用户锁');
+    }
+    flock($lockFile, LOCK_EX);
+
+    try {
+        // 按每50个一组分片
+        $chunks = array_chunk($users, 50);
+        
+        // 删除旧的分片文件
+        $oldFiles = glob(DATA_DIR . '/users_*.json');
+        foreach ($oldFiles as $file) {
+            unlink($file);
+        }
+        
+        // 写入新分片
+        foreach ($chunks as $index => $chunk) {
+            $file = DATA_DIR . '/users_' . ($index + 1) . '.json';
+            file_put_contents($file, json_encode($chunk), LOCK_EX);
+        }
+    } finally {
+        flock($lockFile, LOCK_UN);
+        fclose($lockFile);
+    }
 }
 
 function getUserById($id) {
