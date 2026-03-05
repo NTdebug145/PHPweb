@@ -1083,6 +1083,10 @@ body.dark .doc-ocd {
     // 已在上方处理
     ?>
 
+<!-- Highlight.js 代码高亮 -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
     <div class="app-container">
         <div class="sidebar collapsed" id="sidebar">
             <div class="top-icons">
@@ -1291,6 +1295,15 @@ let rotateTimer = null; // 用于设置图标旋转动画的定时器
                     document.body.classList.remove('dark');
                 }
                 localStorage.setItem('darkMode', enable ? 'dark' : 'light');
+
+    // 动态切换 highlight.js 主题
+    const hljsLink = document.querySelector('link[href*="highlight.js"]');
+    if (hljsLink) {
+        hljsLink.href = enable 
+            ? 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css'
+            : 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css';
+    }
+
             }
 
             function toggleDarkMode() {
@@ -1494,6 +1507,12 @@ async function loadDocument(docName) {
         // 更新内容
         markdownDiv.innerHTML = html;
         addCopyButtonsToCodeBlocks();
+// 代码高亮
+if (typeof hljs !== 'undefined') {
+    document.querySelectorAll('#markdownRenderer pre code').forEach((block) => {
+        hljs.highlightElement(block);
+    });
+}
         window.location.hash = docName;
 
         // 高亮当前文档项
