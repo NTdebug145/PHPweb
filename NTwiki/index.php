@@ -5,6 +5,12 @@ ob_start(); // 启用输出缓冲，防止因BOM或空格导致的header错误
 session_set_cookie_params(['path' => '/']);
 session_start();
 
+// 获取或生成 CSRF 令牌
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
 // 用户个性化配置目录
 define('USER_PS_DIR', __DIR__ . '/UserPS');
 if (!file_exists(USER_PS_DIR)) {
@@ -39,6 +45,15 @@ if (isset($_GET['action']) && $_GET['action'] === 'saveSettings') {
         echo json_encode(['success' => false, 'error' => '未登录']);
         exit;
     }
+
+    // 新增：CSRF 令牌验证
+    $headers = getallheaders();
+    $token = $headers['X-Csrf-Token'] ?? $_POST['_csrf'] ?? ''; // 支持从请求头或 POST 中获取
+    if (empty($token) || $token !== $_SESSION['csrf_token']) {
+        echo json_encode(['success' => false, 'error' => 'CSRF 令牌无效']);
+        exit;
+    }
+
     $input = json_decode(file_get_contents('php://input'), true);
     if (!$input) {
         echo json_encode(['success' => false, 'error' => '无效的请求数据']);
@@ -1158,6 +1173,8 @@ body.dark .doc-ocd {
             const docList = document.getElementById('docList');
             const contentArea = document.getElementById('contentArea');
 
+    const CSRF_TOKEN = '<?php echo $csrf_token; ?>';
+
             // 从PHP传递的用户设置
             const userSettings = <?php echo json_encode($userSettings); ?>;
             const isLoggedIn = <?php echo $currentUserId ? 'true' : 'false'; ?>;
@@ -1372,11 +1389,15 @@ settingsBtn.addEventListener('click', () => {
 
                 try {
                     const response = await fetch('?action=saveSettings', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(settings)
-                    });
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'X-Csrf-Token': CSRF_TOKEN  // 添加令牌头
+            },
+            body: JSON.stringify(settings)
+});
                     const data = await response.json();
+
                     if (data.success) {
                         document.getElementById('settingsMessage').innerHTML = '<span class="success">保存成功</span>';
                         // 更新本地 userSettings
@@ -1542,6 +1563,7 @@ async function loadDocument(docName) {
             initFromLocalStorage();
             loadInitialDoc();
         })();
+
     </script>
 
     <?php if (!$parsedownAvailable): ?>
