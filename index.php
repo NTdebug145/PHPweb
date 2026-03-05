@@ -931,6 +931,22 @@ body {
     overflow-y: auto;
     flex-shrink: 0;
 }
+/* 隐藏滚动条但保留滚动功能 */
+.sidebar,
+.chat-messages,
+#friendRequestsList,
+#friendCheckList,
+.modal-content {
+    scrollbar-width: none;        /* Firefox */
+    -ms-overflow-style: none;     /* IE / Edge */
+}
+.sidebar::-webkit-scrollbar,
+.chat-messages::-webkit-scrollbar,
+#friendRequestsList::-webkit-scrollbar,
+#friendCheckList::-webkit-scrollbar,
+.modal-content::-webkit-scrollbar {
+    display: none;                /* Chrome / Safari / Opera */
+}
 .chat-area {
     flex: 1;
     display: flex;
