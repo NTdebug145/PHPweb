@@ -922,6 +922,10 @@ body {
     background: #ccc;
     margin-right: 10px;
     object-fit: cover;
+    transition: transform 0.5s;  /* 新增：平滑旋转动画 */
+}
+.avatar.rotate-180 {
+    transform: rotate(600deg);
 }
 .dropdown-menu {
     position: absolute;
@@ -2909,6 +2913,12 @@ async function refreshGroupList() {
         });
 
         init();
+
+document.getElementById('avatar').addEventListener('click', function(e) {
+    // 不阻止事件冒泡，保留原有打开菜单的功能
+    this.classList.toggle('rotate-180');
+});
+
     </script>
 </body>
 </html>
