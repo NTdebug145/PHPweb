@@ -25,6 +25,8 @@ define('GROUPS_FILE', DATA_DIR . '/groups.json');
 define('GROUP_MSG_DIR', DATA_DIR . '/groups'); // 存放群消息文件的目录
 define('GROUP_AVATAR_DIR', DATA_DIR . '/group_avatars');
 
+define('ROOT_DIR', __DIR__);   // 网站根目录
+
 define('TEMP_DIR', DATA_DIR . '/tmp');          // 临时目录用于分块上传
 define('IMG_DIR', DATA_DIR . '/img');
 
@@ -373,6 +375,10 @@ if ($action) {
 
             case 'cancelUpload':
                 echo json_encode(handleCancelUpload());
+                break;
+
+            case 'deleteAccount':
+                echo json_encode(handleDeleteAccount());
                 break;
 
             default:
@@ -4043,7 +4049,111 @@ function handleCancelUpload() {
     return ['success' => true];
 }
 
+/**
+ * 注销当前账号
+ * 需验证密码和确认输入 "yes"，然后永久删除用户所有数据
+ */
+function handleDeleteAccount() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    if (!checkCSRF()) {
+        return ['success' => false, 'error' => 'CSRF令牌无效'];
+    }
 
+    $userId = $_SESSION['user_id'];
+    $password = $_POST['password'] ?? '';
+    $confirmYes = $_POST['confirm_yes'] ?? '';
+
+    if ($confirmYes !== 'yes') {
+        return ['success' => false, 'error' => '确认输入不正确'];
+    }
+
+    // 验证用户存在及密码
+    $user = getUserById($userId);
+    if (!$user) {
+        return ['success' => false, 'error' => '用户不存在'];
+    }
+    $hash = decryptHash($user['encrypted_hash']);
+    if (!password_verify($password, $hash)) {
+        return ['success' => false, 'error' => '密码错误'];
+    }
+
+    // 1. 从所有好友的好友列表中移除该用户，并删除双方的聊天记录文件
+    $friends = getFriends($userId);
+    foreach ($friends as $f) {
+        $friendId = $f['id'];
+        // 从对方的好友列表中移除自己
+        $friendFriends = getFriends($friendId);
+        $friendFriends = array_filter($friendFriends, function($ff) use ($userId) {
+            return $ff['id'] != $userId;
+        });
+        saveFriends($friendId, array_values($friendFriends));
+
+        // 删除对方保存的与自己的聊天记录
+        $msgFile = DATA_DIR . '/' . $friendId . '/' . $userId . '.json';
+        if (file_exists($msgFile)) {
+            unlink($msgFile);
+        }
+    }
+
+    // 2. 处理群组：若用户是群主则解散群组，否则从成员中移除
+    $groups = json_decode(file_get_contents(GROUPS_FILE), true) ?: [];
+    $newGroups = [];
+    foreach ($groups as $group) {
+        if (in_array($userId, $group['members'])) {
+            if ($group['creator'] == $userId) {
+                // 用户是群主，解散该群组（删除群消息文件，不保留群记录）
+                $msgFile = GROUP_MSG_DIR . '/' . $group['id'] . '.json';
+                if (file_exists($msgFile)) {
+                    unlink($msgFile);
+                }
+                // 不将此群加入新数组，即删除群组
+                continue;
+            } else {
+                // 普通成员，从成员列表中移除
+                $group['members'] = array_values(array_diff($group['members'], [$userId]));
+                $newGroups[] = $group;
+            }
+        } else {
+            $newGroups[] = $group;
+        }
+    }
+    file_put_contents(GROUPS_FILE, json_encode($newGroups), LOCK_EX);
+
+    // 3. 删除自己的好友文件
+    $friendFile = DATA_DIR . '/friends_' . $userId . '.json';
+    if (file_exists($friendFile)) {
+        unlink($friendFile);
+    }
+
+    // 4. 删除自己的聊天记录目录及其下所有文件
+    $userMsgDir = DATA_DIR . '/' . $userId;
+    if (is_dir($userMsgDir)) {
+        array_map('unlink', glob($userMsgDir . '/*'));
+        rmdir($userMsgDir);
+    }
+
+    // 5. 删除头像文件（如果存在）
+    if (!empty($user['avatar'])) {
+        $avatarPath = ROOT_DIR . '/' . $user['avatar'];
+        if (file_exists($avatarPath)) {
+            unlink($avatarPath);
+        }
+    }
+
+    // 6. 从 users.json 中移除该用户
+    $users = getUsers();
+    $users = array_filter($users, function($u) use ($userId) {
+        return $u['id'] != $userId;
+    });
+    saveUsers(array_values($users));
+
+    // 7. 销毁会话
+    session_destroy();
+
+    return ['success' => true];
+}
 
 ?>
 
