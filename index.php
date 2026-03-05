@@ -25,6 +25,21 @@ define('GROUPS_FILE', DATA_DIR . '/groups.json');
 define('GROUP_MSG_DIR', DATA_DIR . '/groups'); // 存放群消息文件的目录
 define('GROUP_AVATAR_DIR', DATA_DIR . '/group_avatars');
 
+define('TEMP_DIR', DATA_DIR . '/tmp');          // 临时目录用于分块上传
+define('IMG_DIR', DATA_DIR . '/img');
+
+foreach ([DATA_DIR . '/FileName', IMG_DIR] as $dir) {
+    if (!file_exists($dir)) {
+        mkdir($dir, 0755, true);
+    }
+}
+
+foreach ([DATA_DIR, AVATAR_DIR, UPLOAD_DIR, UPLOAD_DIR . '/FileName', TEMP_DIR] as $dir) {
+    if (!file_exists($dir)) {
+        mkdir($dir, 0755, true);
+    }
+}
+
 // 在文件开头创建目录
 if (!file_exists(GROUP_AVATAR_DIR)) {
     mkdir(GROUP_AVATAR_DIR, 0755, true);
@@ -344,6 +359,20 @@ if ($action) {
                 break;
             case 'removeGroupMember':
                 echo json_encode(handleRemoveGroupMember());
+                break;
+
+            case 'uploadFile':
+                echo json_encode(handleUploadFile());
+                break;
+            case 'uploadChunk':
+                echo json_encode(handleUploadChunk());
+                break;
+            case 'mergeFile':
+                echo json_encode(handleMergeFile());
+                break;
+
+            case 'cancelUpload':
+                echo json_encode(handleCancelUpload());
                 break;
 
             default:
@@ -769,6 +798,13 @@ function handleSendGroupMessage() {
         'type' => $type,
         'timestamp' => time()
     ];
+    if (isset($_POST['fileName'])) {
+        $newMsg['fileName'] = $_POST['fileName'];
+    }
+    if (isset($_POST['fileSize'])) {
+        $newMsg['fileSize'] = (int)$_POST['fileSize'];
+    }
+
     $messages[] = $newMsg;
 
     // 重新加密保存
@@ -777,7 +813,6 @@ function handleSendGroupMessage() {
 
     return ['success' => true];
 }
-
 // 以下为HTML界面（保持不变，仅修改了CSS部分，省略以节省篇幅，实际使用时请保留原样）
 ?>
 <!DOCTYPE html>
@@ -1367,6 +1402,7 @@ html.dark-mode .moon-svg { display: none; }
                     <textarea id="messageInput" placeholder="输入消息..."></textarea>
                     <button onclick="sendMessage()"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="11646"><path d="M0 1024l106.496-474.112 588.8-36.864-588.8-39.936L0 0l1024 512z" fill="" p-id="11647"></path></svg></button>
                     <button class="image-btn" onclick="document.getElementById('imageUpload').click()"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="12502"><path d="M335.36 440.32c38.4 0 71.68-30.72 71.68-71.68 0-38.4-30.72-71.68-71.68-71.68-38.4 0-71.68 30.72-71.68 71.68 2.56 40.96 33.28 71.68 71.68 71.68z m0 0" fill="" p-id="12503"></path><path d="M652.8 396.8L445.44 691.2l-107.52-151.04-179.2 253.44h704l-209.92-396.8z m0 0" fill="" p-id="12504"></path><path d="M934.4 107.52h-844.8c-20.48 0-35.84 15.36-35.84 35.84v739.84c0 20.48 15.36 35.84 35.84 35.84h844.8c20.48 0 35.84-15.36 35.84-35.84V143.36c0-20.48-15.36-35.84-35.84-35.84z m-35.84 739.84H125.44V176.64h775.68v670.72h-2.56z m0 0" fill="" p-id="12505"></path></svg></button>
+                    <button class="image-btn" onclick="showFileUploadModal()"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="868"><path d="M371.2 455.111111L483.555556 343.893333v262.826667a28.444444 28.444444 0 1 0 56.888888 0v-262.826667L652.8 455.111111a28.444444 28.444444 0 0 0 40.106667-40.106667L532.195556 256a28.444444 28.444444 0 0 0-40.106667 0l-160.995556 160.995556A28.444444 28.444444 0 0 0 371.2 455.111111zM739.555556 663.608889a28.444444 28.444444 0 0 0-28.444445 28.444444v28.444445H312.888889v-28.444445a28.444444 28.444444 0 0 0-56.888889 0v56.888889a28.444444 28.444444 0 0 0 28.444444 28.444445h455.111112a28.444444 28.444444 0 0 0 28.444444-28.444445v-56.888889a28.444444 28.444444 0 0 0-28.444444-28.444444z" p-id="869"></path></svg></button>
                     <input type="file" id="imageUpload" accept="image/*" style="display:none;">
                 </div>
             </div>
@@ -1480,6 +1516,46 @@ html.dark-mode .moon-svg { display: none; }
     </div>
 </div>
 
+<!-- 上传文件模态框 -->
+<div class="modal" id="uploadFileModal">
+    <div class="modal-content" style="width: 500px;">
+        <span class="close" onclick="closeModal('uploadFileModal')">&times;</span>
+        <h3><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="868"><path d="M371.2 455.111111L483.555556 343.893333v262.826667a28.444444 28.444444 0 1 0 56.888888 0v-262.826667L652.8 455.111111a28.444444 28.444444 0 0 0 40.106667-40.106667L532.195556 256a28.444444 28.444444 0 0 0-40.106667 0l-160.995556 160.995556A28.444444 28.444444 0 0 0 371.2 455.111111zM739.555556 663.608889a28.444444 28.444444 0 0 0-28.444445 28.444444v28.444445H312.888889v-28.444445a28.444444 28.444444 0 0 0-56.888889 0v56.888889a28.444444 28.444444 0 0 0 28.444444 28.444445h455.111112a28.444444 28.444444 0 0 0 28.444444-28.444445v-56.888889a28.444444 28.444444 0 0 0-28.444444-28.444444z" p-id="869"></path></svg> 上传文件</h3>
+        <input type="file" id="fileToUpload" style="width:100%; margin-bottom:15px;">
+        
+        <div style="margin:15px 0; display:flex; align-items:center;">
+            <input type="checkbox" id="chunkedUploadCheckbox" style="width:18px; height:18px; margin-right:10px;">
+            <label for="chunkedUploadCheckbox" style="font-size:16px; line-height:18px;">分块上传</label>
+        </div>
+
+        <div id="chunkOptions" style="display:none; margin:15px 0; padding:15px; background:var(--input-bg); border-radius:5px;">
+            <div style="display:flex; align-items:center; margin-bottom:15px;">
+                <span style="width:60px; font-size:14px;">块大小:</span>
+                <input type="number" id="chunkSize" value="1" min="1" style="width:80px; margin-left:5px; padding:6px;">
+                <select id="chunkUnit" style="margin-left:5px; padding:6px;">
+                    <option value="MB">MB</option>
+                    <option value="KB">KB</option>
+                </select>
+            </div>
+            <div style="display:flex; align-items:center;">
+                <span style="width:60px; font-size:14px;">间隔:</span>
+                <input type="number" id="chunkInterval" value="0" min="0" step="0.1" style="width:80px; margin-left:5px; padding:6px;">
+                <span style="margin-left:5px; font-size:14px;">秒</span>
+            </div>
+        </div>
+
+        <div style="margin:15px 0;">
+            <progress id="uploadProgress" value="0" max="100" style="width:100%; height:20px;"></progress>
+            <span id="progressPercent" style="margin-left:10px;">0%</span>
+        </div>
+
+        <div style="text-align:right;">
+            <button class="primary" onclick="startFileUpload()">上传</button>
+            <button class="secondary" onclick="cancelFileUpload()">取消</button>
+        </div>
+    </div>
+</div>
+
     <script>
         let currentUser = null;
         let currentFriendId = null;
@@ -1493,6 +1569,308 @@ let currentChatId = null;
 let currentChatInfo = null;
 
 let groupListPollingInterval = null;
+
+// 文件上传相关变量
+let currentFileUpload = {
+    file: null,
+    uploadId: null,
+    totalChunks: 0,
+    chunkSize: 0,
+    interval: 0,
+    uploadedBytes: 0,
+    aborted: false  // 新增
+};
+
+// 取消上传（前端正确位置的函数，已存在，无需修改）
+async function cancelFileUpload() {
+    // 如果有分块上传正在进行
+    if (currentFileUpload.uploadId) {
+        currentFileUpload.aborted = true; // 停止发送后续分块
+        // 通知后端删除临时文件
+        const formData = new URLSearchParams();
+        formData.append('uploadId', currentFileUpload.uploadId);
+        formData.append('_csrf', currentUser.csrf_token);
+        await fetch('?action=cancelUpload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: formData
+        });
+    }
+    // 关闭模态框
+    closeModal('uploadFileModal');
+}
+
+function showFileUploadModal() {
+    // 重置状态
+    document.getElementById('fileToUpload').value = '';
+    document.getElementById('chunkedUploadCheckbox').checked = false;
+    document.getElementById('chunkOptions').style.display = 'none';
+    document.getElementById('uploadProgress').value = 0;
+    document.getElementById('progressPercent').textContent = '0%';
+    currentFileUpload = { file: null, aborted: false };
+    document.getElementById('uploadFileModal').style.display = 'flex';
+}
+
+// 显示/隐藏分块选项
+document.getElementById('chunkedUploadCheckbox').addEventListener('change', function(e) {
+    document.getElementById('chunkOptions').style.display = e.target.checked ? 'block' : 'none';
+});
+
+// 开始上传
+async function startFileUpload() {
+    const fileInput = document.getElementById('fileToUpload');
+    if (!fileInput.files.length) {
+        alert('请选择文件');
+        return;
+    }
+    const file = fileInput.files[0];
+    const useChunked = document.getElementById('chunkedUploadCheckbox').checked;
+
+    if (!useChunked) {
+        // 普通上传
+        await uploadFileSimple(file);
+    } else {
+        // 分块上传
+        const chunkSizeInput = document.getElementById('chunkSize').value;
+        const chunkUnit = document.getElementById('chunkUnit').value;
+        let chunkSize = parseInt(chunkSizeInput);
+        if (isNaN(chunkSize) || chunkSize <= 0) {
+            alert('请输入有效的块大小');
+            return;
+        }
+        if (chunkUnit === 'MB') chunkSize *= 1024 * 1024;
+        else if (chunkUnit === 'KB') chunkSize *= 1024;
+
+        const interval = parseFloat(document.getElementById('chunkInterval').value) || 0;
+
+        await uploadFileChunked(file, chunkSize, interval);
+    }
+}
+
+// 普通上传（不分块）
+async function uploadFileSimple(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('_csrf', currentUser.csrf_token);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '?action=uploadFile', true);
+
+    xhr.upload.onprogress = function(e) {
+        if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            document.getElementById('uploadProgress').value = percent;
+            document.getElementById('progressPercent').textContent = percent + '%';
+        }
+    };
+
+xhr.onload = function() {
+    if (xhr.status === 200) {
+        try {
+            const data = JSON.parse(xhr.responseText);
+            if (data.success) {
+                // 上传成功，发送文件消息
+                sendFileMessage(data.fileId, file.name, file.size);  // 修改点
+                closeModal('uploadFileModal');
+            } else {
+                alert('上传失败：' + data.error);
+            }
+        } catch (e) {
+            alert('解析响应失败');
+        }
+    } else {
+        alert('上传请求失败');
+    }
+};
+
+    xhr.onerror = function() {
+        alert('网络错误');
+    };
+
+    xhr.send(formData);
+}
+
+// 分块上传
+// 分块上传
+async function uploadFileChunked(file, chunkSize, interval) {
+    const totalChunks = Math.ceil(file.size / chunkSize);
+    const uploadId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    currentFileUpload = {
+        file: file,
+        uploadId: uploadId,
+        totalChunks: totalChunks,
+        chunkSize: chunkSize,
+        interval: interval,
+        uploadedBytes: 0,
+        aborted: false  // 取消标志位
+    };
+    // 禁用上传按钮防止重复点击
+    const uploadBtn = document.querySelector('#uploadFileModal .primary');
+    uploadBtn.disabled = true;
+
+    for (let i = 0; i < totalChunks; i++) {
+        // 核心：检测到取消则立即终止分块上传循环
+        if (currentFileUpload.aborted) {
+            console.log('上传已取消，终止分块发送');
+            break;
+        }
+        const start = i * chunkSize;
+        const end = Math.min(start + chunkSize, file.size);
+        const chunk = file.slice(start, end);
+        const formData = new FormData();
+        formData.append('chunk', chunk, file.name + '.part' + i);
+        formData.append('uploadId', uploadId);
+        formData.append('index', i);
+        formData.append('total', totalChunks);
+        formData.append('_csrf', currentUser.csrf_token);
+
+        // 上传单个分块，失败则直接终止并提示
+        const success = await uploadChunk(formData, i, totalChunks, file.size);
+        if (!success) {
+            alert('分块上传失败，请重试');
+            uploadBtn.disabled = false;
+            return;
+        }
+        // 更新已上传字节数并刷新整体进度
+        currentFileUpload.uploadedBytes += chunk.size;
+        updateOverallProgress(file.size);
+        // 分块间隔等待（最后一个分块无需等待）
+        if (interval > 0 && i < totalChunks - 1) {
+            await new Promise(resolve => setTimeout(resolve, interval * 1000));
+        }
+    }
+
+    // 仅当未取消时，才执行文件合并操作
+    if (!currentFileUpload.aborted) {
+        const mergeResult = await mergeFile(uploadId, totalChunks, file.name);
+        uploadBtn.disabled = false;
+        if (mergeResult.success) {
+            sendFileMessage(mergeResult.fileId, file.name, file.size);
+            closeModal('uploadFileModal');
+        } else {
+            alert('合并文件失败：' + mergeResult.error);
+        }
+    } else {
+        // 已取消上传，恢复按钮状态，不执行合并
+        uploadBtn.disabled = false;
+        console.log('上传已取消，跳过文件合并');
+    }
+}
+
+// 上传单个分块，返回 Promise<boolean>
+function uploadChunk(formData, index, total, fileSize) {
+    return new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '?action=uploadChunk', true);
+
+        // 监听这个分块的上传进度
+        xhr.upload.onprogress = function(e) {
+            if (e.lengthComputable) {
+                // 计算当前分块已上传部分占整个文件的比例
+                const chunkStart = index * currentFileUpload.chunkSize;
+                const loadedInFile = chunkStart + e.loaded;
+                const percent = Math.round((loadedInFile / fileSize) * 100);
+                document.getElementById('uploadProgress').value = percent;
+                document.getElementById('progressPercent').textContent = percent + '%';
+            }
+        };
+
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    const data = JSON.parse(xhr.responseText);
+                    resolve(data.success);
+                } catch {
+                    resolve(false);
+                }
+            } else {
+                resolve(false);
+            }
+        };
+
+        xhr.onerror = function() {
+            resolve(false);
+        };
+
+        xhr.send(formData);
+    });
+}
+
+// 更新整体进度（用于分块上传完成一个块后的精确更新）
+function updateOverallProgress(fileSize) {
+    const percent = Math.round((currentFileUpload.uploadedBytes / fileSize) * 100);
+    document.getElementById('uploadProgress').value = percent;
+    document.getElementById('progressPercent').textContent = percent + '%';
+}
+
+// 合并分块
+async function mergeFile(uploadId, total, originalName) {
+    const formData = new URLSearchParams();
+    formData.append('uploadId', uploadId);
+    formData.append('total', total);
+    formData.append('originalName', originalName);
+    formData.append('_csrf', currentUser.csrf_token);
+
+    const res = await fetch('?action=mergeFile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: formData
+    });
+    return await res.json();
+}
+
+// 发送文件消息（类似图片消息，type='file'）
+// 发送文件消息（包含文件名和大小）
+async function sendFileMessage(fileId, fileName, fileSize) {
+    if (!currentChatId) {
+        alert('请先选择一个聊天对象');
+        return;
+    }
+
+    let url, params;
+    if (currentChatType === 'friend') {
+        url = '?action=sendMessage';
+        params = {
+            friendId: currentChatId,
+            content: fileId,
+            type: 'file',
+            fileName: fileName,
+            fileSize: fileSize,
+            _csrf: currentUser.csrf_token
+        };
+    } else if (currentChatType === 'group') {
+        url = '?action=sendGroupMessage';
+        params = {
+            groupId: currentChatId,
+            content: fileId,
+            type: 'file',
+            fileName: fileName,
+            fileSize: fileSize,
+            _csrf: currentUser.csrf_token
+        };
+    } else {
+        alert('未知聊天类型');
+        return;
+    }
+
+    const formData = new URLSearchParams(params);
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: formData
+    });
+    const data = await res.json();
+    if (data.success) {
+        // 刷新对应聊天窗口
+        if (currentChatType === 'friend') {
+            loadMessages(currentChatId);
+        } else {
+            loadGroupMessages(currentChatId);
+        }
+    } else {
+        alert('发送文件消息失败：' + (data.error || '未知错误'));
+    }
+}
 
 const DEFAULT_AVATAR = 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2240%22%20height%3D%2240%22%20viewBox%3D%220%200%2040%2040%22%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%2220%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E';
 
@@ -2126,29 +2504,26 @@ function appendMessage(msg) {
     const rightCol = document.createElement('div');
     rightCol.className = 'right-col';
 
-    // 发送者名称区域，可能包含标签
+    // 发送者名称区域
     const nameDiv = document.createElement('div');
     nameDiv.className = 'sender-name';
-
-    // 基础名称文本
     let senderName = msg.fromName || (isMe ? '我' : msg.from);
     const nameText = document.createTextNode(senderName);
     nameDiv.appendChild(nameText);
 
-    // 如果是群聊且消息发送者是群主，则添加群主标签
     if (currentChatType === 'group' && currentChatInfo && msg.from === currentChatInfo.creator) {
         const ownerTag = document.createElement('span');
         ownerTag.className = 'group-owner-tag';
         ownerTag.textContent = '群主';
         nameDiv.appendChild(ownerTag);
     }
-
     rightCol.appendChild(nameDiv);
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     const contentDiv = document.createElement('div');
     contentDiv.className = 'content';
+
     if (msg.type === 'text') {
         contentDiv.textContent = msg.content;
     } else if (msg.type === 'image') {
@@ -2157,7 +2532,51 @@ function appendMessage(msg) {
         img.alt = 'image';
         img.onclick = () => window.open(img.src);
         contentDiv.appendChild(img);
+    } else if (msg.type === 'file') {
+        const fileName = msg.fileName || '未知文件';
+        const fileSize = msg.fileSize || 0;
+        const ext = fileName.split('.').pop().toLowerCase() || 'file';
+        const iconPath = '/data/img/' + ext + '.png';
+
+        const fileDiv = document.createElement('div');
+        fileDiv.style.display = 'flex';
+        fileDiv.style.alignItems = 'center';
+
+        const icon = document.createElement('img');
+        icon.src = iconPath;
+        icon.style.width = '32px';
+        icon.style.height = '32px';
+        icon.style.marginRight = '10px';
+        icon.style.objectFit = 'contain';
+        icon.onerror = function() { this.src = '/data/img/file.png'; };
+        fileDiv.appendChild(icon);
+
+        const infoDiv = document.createElement('div');
+        infoDiv.style.display = 'flex';
+        infoDiv.style.flexDirection = 'column';
+
+        const link = document.createElement('a');
+        link.href = '?action=getImage&file=' + encodeURIComponent(msg.content);
+        link.target = '_blank';
+        link.textContent = fileName;
+        link.style.textDecoration = 'none';
+        link.style.color = 'var(--text-color)';
+        link.style.fontWeight = '500';
+        infoDiv.appendChild(link);
+
+        if (fileSize > 0) {
+            const sizeSpan = document.createElement('span');
+            sizeSpan.style.fontSize = '12px';
+            sizeSpan.style.color = 'gray';
+            const sizeMB = (fileSize / (1024 * 1024)).toFixed(2);
+            sizeSpan.textContent = '大小: ' + sizeMB + ' MB';
+            infoDiv.appendChild(sizeSpan);
+        }
+
+        fileDiv.appendChild(infoDiv);
+        contentDiv.appendChild(fileDiv);
     }
+
     bubble.appendChild(contentDiv);
     rightCol.appendChild(bubble);
     div.appendChild(rightCol);
@@ -3099,6 +3518,14 @@ function handleSendMessage() {
         'type' => $type,
         'timestamp' => time()
     ];
+
+if (isset($_POST['fileName'])) {
+    $message['fileName'] = $_POST['fileName'];
+}
+if (isset($_POST['fileSize'])) {
+    $message['fileSize'] = (int)$_POST['fileSize'];
+}
+
     saveMessageToUser($fromId, $toId, $message);
     saveMessageToUser($toId, $fromId, $message);
     return ['success' => true];
@@ -3161,22 +3588,31 @@ function handleGetImage() {
         header('HTTP/1.0 404 Not Found');
         exit;
     }
-    $map = json_decode(file_get_contents(FILE_NAME_JSON), true);
-    $mime = 'image/jpeg';
+
+    // 从 FileN.json 中读取文件信息
+    $map = json_decode(file_get_contents(FILE_NAME_JSON), true) ?: [];
+    $info = null;
     foreach ($map as $item) {
         if ($item['md5'] == $fileId) {
-            $mime = $item['mime'];
+            $info = $item;
             break;
         }
     }
 
-    // 添加缓存头：缓存 86400 秒（1天）
+    $mime = $info['mime'] ?? 'application/octet-stream';
+    $originalName = $info['original'] ?? $fileId;
+
+    // 设置下载头（对于所有文件，包括图片，都作为附件下载，避免浏览器直接显示）
+    header('Content-Description: File Transfer');
+    header('Content-Type: ' . $mime);
+    header('Content-Disposition: attachment; filename="' . addslashes($originalName) . '"');
+    header('Content-Length: ' . filesize($path));
     header('Cache-Control: public, max-age=86400');
     header('Expires: ' . gmdate('D, d M Y H:i:s', time() + 86400) . ' GMT');
-    header('Content-Type: ' . $mime);
     readfile($path);
     exit;
 }
+
 /**
  * 发送系统消息（机器人账号 1000000000）
  * @param string $toUserId 接收者ID
@@ -3391,4 +3827,213 @@ function handleRemoveGroupMember() {
     return ['success' => true];
 }
 
+/**
+ * 普通文件上传（不分块）
+ */
+function handleUploadFile() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    if (!checkCSRF()) {
+        return ['success' => false, 'error' => 'CSRF令牌无效'];
+    }
+    if (!isset($_FILES['file'])) {
+        return ['success' => false, 'error' => '没有文件'];
+    }
+
+    $file = $_FILES['file'];
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        return ['success' => false, 'error' => '上传错误：' . $file['error']];
+    }
+
+    // 限制文件大小（例如 100MB）
+    $maxSize = 100 * 1024 * 1024; // 100MB
+    if ($file['size'] > $maxSize) {
+        return ['success' => false, 'error' => '文件不能超过100MB'];
+    }
+
+    // 获取真实 MIME 类型
+    $finfo = finfo_open(FILEINFO_MIME_TYPE);
+    $mime = finfo_file($finfo, $file['tmp_name']);
+    finfo_close($finfo);
+
+    // 生成 MD5 作为文件名
+    $md5 = md5_file($file['tmp_name']);
+    $dest = UPLOAD_DIR . '/' . $md5;
+
+    if (!file_exists($dest)) {
+        if (!move_uploaded_file($file['tmp_name'], $dest)) {
+            return ['success' => false, 'error' => '保存文件失败'];
+        }
+    }
+
+    // 记录文件信息
+    $map = json_decode(file_get_contents(FILE_NAME_JSON), true) ?: [];
+    $map[] = [
+        'original' => $file['name'],
+        'md5'      => $md5,
+        'mime'     => $mime,
+        'size'     => $file['size'],
+        'type'     => 'file'          // 标记为普通文件（与图片区分）
+    ];
+    file_put_contents(FILE_NAME_JSON, json_encode($map), LOCK_EX);
+
+    return ['success' => true, 'fileId' => $md5];
+}
+
+/**
+ * 上传分块
+ */
+function handleUploadChunk() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    if (!checkCSRF()) {
+        return ['success' => false, 'error' => 'CSRF令牌无效'];
+    }
+
+    $uploadId = $_POST['uploadId'] ?? '';
+    $index    = $_POST['index'] ?? '';
+    $total    = $_POST['total'] ?? '';
+    if (!$uploadId || !isset($_FILES['chunk']) || $index === '' || $total === '') {
+        return ['success' => false, 'error' => '参数不足'];
+    }
+
+    $index = (int)$index;
+    $total = (int)$total;
+    if ($index < 0 || $total <= 0 || $index >= $total) {
+        return ['success' => false, 'error' => '分块索引错误'];
+    }
+
+    $file = $_FILES['chunk'];
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        return ['success' => false, 'error' => '分块上传错误'];
+    }
+
+    // 每个分块最大限制（例如 10MB，可由前端控制）
+    if ($file['size'] > 10 * 1024 * 1024) {
+        return ['success' => false, 'error' => '分块不能超过10MB'];
+    }
+
+    // 临时目录：TEMP_DIR/uploadId/
+    $partDir = TEMP_DIR . '/' . $uploadId;
+    if (!file_exists($partDir)) {
+        mkdir($partDir, 0755, true);
+    }
+
+    $partFile = $partDir . '/' . $index;
+    if (!move_uploaded_file($file['tmp_name'], $partFile)) {
+        return ['success' => false, 'error' => '保存分块失败'];
+    }
+
+    return ['success' => true];
+}
+
+/**
+ * 合并分块
+ */
+function handleMergeFile() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    if (!checkCSRF()) {
+        return ['success' => false, 'error' => 'CSRF令牌无效'];
+    }
+
+    $uploadId     = $_POST['uploadId'] ?? '';
+    $total        = (int)($_POST['total'] ?? 0);
+    $originalName = $_POST['originalName'] ?? 'unknown';
+    if (!$uploadId || $total <= 0) {
+        return ['success' => false, 'error' => '参数不足'];
+    }
+
+    $partDir = TEMP_DIR . '/' . $uploadId;
+    if (!is_dir($partDir)) {
+        return ['success' => false, 'error' => '上传任务不存在'];
+    }
+
+    // 检查所有分块是否都存在
+    for ($i = 0; $i < $total; $i++) {
+        if (!file_exists($partDir . '/' . $i)) {
+            return ['success' => false, 'error' => "缺少分块 {$i}"];
+        }
+    }
+
+    // 合并到临时文件
+    $mergedTmp = $partDir . '/merged.tmp';
+    $fp = fopen($mergedTmp, 'wb');
+    if (!$fp) {
+        return ['success' => false, 'error' => '无法创建合并文件'];
+    }
+
+    for ($i = 0; $i < $total; $i++) {
+        $chunk = file_get_contents($partDir . '/' . $i);
+        fwrite($fp, $chunk);
+    }
+    fclose($fp);
+
+    // 计算 MD5
+    $md5 = md5_file($mergedTmp);
+    $finalPath = UPLOAD_DIR . '/' . $md5;
+
+    // 如果最终文件不存在，则移动过去
+    if (!file_exists($finalPath)) {
+        rename($mergedTmp, $finalPath);
+    } else {
+        unlink($mergedTmp); // 已存在则删除临时合并文件
+    }
+
+    // 获取 MIME 和大小
+    $finfo = finfo_open(FILEINFO_MIME_TYPE);
+    $mime = finfo_file($finfo, $finalPath);
+    finfo_close($finfo);
+    $size = filesize($finalPath);
+
+    // 记录文件信息
+    $map = json_decode(file_get_contents(FILE_NAME_JSON), true) ?: [];
+    $map[] = [
+        'original' => $originalName,
+        'md5'      => $md5,
+        'mime'     => $mime,
+        'size'     => $size,
+        'type'     => 'file'
+    ];
+    file_put_contents(FILE_NAME_JSON, json_encode($map), LOCK_EX);
+
+    // 删除临时目录及分块
+    array_map('unlink', glob($partDir . '/*'));
+    rmdir($partDir);
+
+    return ['success' => true, 'fileId' => $md5];
+}
+
+/**
+ * 取消上传，删除临时目录
+ */
+/**
+ * 取消上传，删除临时目录
+ */
+function handleCancelUpload() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    if (!checkCSRF()) {
+        return ['success' => false, 'error' => 'CSRF令牌无效'];
+    }
+    $uploadId = $_POST['uploadId'] ?? '';
+    if (!$uploadId) {
+        return ['success' => false, 'error' => '缺少uploadId'];
+    }
+    $partDir = TEMP_DIR . '/' . $uploadId;
+    if (is_dir($partDir)) {
+        // 删除所有分块文件
+        array_map('unlink', glob($partDir . '/*'));
+        rmdir($partDir);
+    }
+    return ['success' => true];
+}
+
+
+
 ?>
+
