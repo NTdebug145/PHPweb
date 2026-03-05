@@ -539,6 +539,14 @@ if (empty($csrf_token)) {
                     <?php endif; ?>
                 </span>
             </div>
+
+<div class="info-item">
+    <span class="label"></span>
+    <span class="value">
+        <button class="manage-btn" onclick="showDeleteAccountModal()" style="background:#f56c6c; color:white; border:none;">注销账号</button>
+    </span>
+</div>
+
             <!-- 预留扩展：可以添加更多字段，如邮箱、手机等 -->
         </div>
 
@@ -663,6 +671,23 @@ if (empty($csrf_token)) {
             <div id="groupMembersList" style="max-height: 400px; overflow-y: auto;"></div>
         </div>
     </div>
+
+<!-- 注销账号模态框 -->
+<div class="modal" id="deleteAccountModal">
+    <div class="modal-content">
+        <h3>
+            注销账号
+            <span class="close" onclick="closeModal('deleteAccountModal')">&times;</span>
+        </h3>
+        <p style="color: #f56c6c; margin-bottom: 15px;">警告：注销账号将永久删除所有数据，包括好友、群组、聊天记录等，且无法恢复！</p>
+        <input type="password" id="deletePassword" placeholder="请输入您的密码">
+        <input type="text" id="deleteConfirm" placeholder="输入 'yes' 以确认">
+        <div style="text-align: right; margin-top: 20px;">
+            <button class="danger" onclick="deleteAccount()">确认注销</button>
+            <button class="secondary" onclick="closeModal('deleteAccountModal')">取消</button>
+        </div>
+    </div>
+</div>
 
     <script>
         // 当前用户ID和CSRF令牌
@@ -922,6 +947,49 @@ if (empty($csrf_token)) {
                 localStorage.setItem('darkMode', isDark);
             });
         })();
+
+// 显示注销账号模态框
+function showDeleteAccountModal() {
+    document.getElementById('deletePassword').value = '';
+    document.getElementById('deleteConfirm').value = '';
+    showModal('deleteAccountModal');
+}
+
+// 执行注销请求
+function deleteAccount() {
+    const password = document.getElementById('deletePassword').value.trim();
+    const confirmYes = document.getElementById('deleteConfirm').value.trim();
+    if (!password) {
+        alert('请输入密码');
+        return;
+    }
+    if (confirmYes !== 'yes') {
+        alert('请输入 "yes" 以确认注销');
+        return;
+    }
+    const formData = new URLSearchParams();
+    formData.append('password', password);
+    formData.append('confirm_yes', confirmYes);
+    formData.append('_csrf', CSRF_TOKEN);
+    fetch('/index.php?action=deleteAccount', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: formData
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            alert('账号已注销，即将返回首页');
+            window.location.href = '/index.php';
+        } else {
+            alert('注销失败：' + (data.error || '未知错误'));
+        }
+    })
+    .catch(err => {
+        alert('请求失败：' + err);
+    });
+}
+
     </script>
 </body>
 </html>
