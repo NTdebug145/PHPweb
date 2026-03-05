@@ -26,7 +26,7 @@ if ($currentUserId && file_exists(USER_PS_DIR . '/' . $currentUserId . '.json'))
     $settingsContent = file_get_contents(USER_PS_DIR . '/' . $currentUserId . '.json');
     $userSettings = json_decode($settingsContent, true) ?: [];
 }
-// 默认设置（新增 useNoFlowWallpaper）
+// 默认设置（新增 wallpaperBlur，默认开启模糊）
 $defaultSettings = [
     'useWallpaper' => false,
     'useNoFlowWallpaper' => false,
@@ -34,7 +34,8 @@ $defaultSettings = [
         'https://www.loliapi.com/acg/',
         'https://bing.img.run/rand.php'
     ],
-    'autoSwitch' => false
+    'autoSwitch' => false,
+    'wallpaperBlur' => true      // <--- 新增：背景模糊开关，默认开启
 ];
 $userSettings = array_merge($defaultSettings, $userSettings);
 
@@ -63,6 +64,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'saveSettings') {
     $useNoFlowWallpaper = isset($input['useNoFlowWallpaper']) ? (bool)$input['useNoFlowWallpaper'] : false;
     $wallpaperUrls = isset($input['wallpaperUrls']) && is_array($input['wallpaperUrls']) ? $input['wallpaperUrls'] : [];
     $autoSwitch = isset($input['autoSwitch']) ? (bool)$input['autoSwitch'] : false;
+    // <--- 新增：读取壁纸模糊开关
+    $wallpaperBlur = isset($input['wallpaperBlur']) ? (bool)$input['wallpaperBlur'] : false;
 
     // 互斥校验：如果两者同时为 true，强制关闭无流量壁纸（可自行调整策略）
     if ($useWallpaper && $useNoFlowWallpaper) {
@@ -85,7 +88,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'saveSettings') {
         'useWallpaper' => $useWallpaper,
         'useNoFlowWallpaper' => $useNoFlowWallpaper,
         'wallpaperUrls' => $filteredUrls,
-        'autoSwitch' => $autoSwitch
+        'autoSwitch' => $autoSwitch,
+        'wallpaperBlur' => $wallpaperBlur   // <--- 保存模糊开关
     ];
 
     file_put_contents(USER_PS_DIR . '/' . $currentUserId . '.json', json_encode($newSettings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
@@ -258,7 +262,7 @@ if (is_dir(DOCS_DIR)) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
     <title>NTC - wiki</title>
     <style>
-        /* 原有样式保持不变，仅新增设置按钮及模态框样式，并添加动画 */
+        /* 原有样式保持不变，仅移除 ::before 模糊层，添加 .wallpaper-blur 样式 */
         * {
             margin: 0;
             padding: 0;
@@ -480,7 +484,7 @@ body.dark .doc-item.active {
             background-size: cover;
             background-position: center;
             background-repeat: no-repeat;
-            position: relative; /* 为伪元素定位 */
+            position: relative; /* 为模糊层定位 */
             z-index: 1;
         }
 
@@ -488,21 +492,20 @@ body.dark .doc-item.active {
             background-color: #0f172a;
         }
 
-        /* 磨砂玻璃伪元素 - 仅在启用外部壁纸时显示 */
-        .content-area.has-wallpaper::before {
-            content: '';
+        /* 新增：独立模糊层，动态插入 */
+        .wallpaper-blur {
             position: absolute;
             top: 0;
             left: 0;
-            right: 0;
-            bottom: 0;
+            width: 100%;
+            height: 100%;          /* 初始高度，JS会动态更新为 scrollHeight */
+            pointer-events: none;
             background-color: rgba(255, 255, 255, 0.2);
             backdrop-filter: blur(5px);
             -webkit-backdrop-filter: blur(5px);
-            z-index: -1;
-            pointer-events: none;
+            z-index: -1;            /* 放在背景之上，内容之下 */
         }
-        body.dark .content-area.has-wallpaper::before {
+        body.dark .wallpaper-blur {
             background-color: rgba(0, 0, 0, 0.3);
         }
 
@@ -1126,13 +1129,14 @@ body.dark .doc-ocd {
         </div>
 
         <main class="content-area" id="contentArea">
+            <!-- 模糊层将由 JS 动态插入，确保覆盖整个滚动区域 -->
             <div class="markdown-body" id="markdownRenderer">
                 <div class="welcome-message"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="6159"><path d="M469.333333 768c-166.4 0-298.666667-132.266667-298.666666-298.666667s132.266667-298.666667 298.666666-298.666666 298.666667 132.266667 298.666667 298.666666-132.266667 298.666667-298.666667 298.666667z m0-85.333333c119.466667 0 213.333333-93.866667 213.333334-213.333334s-93.866667-213.333333-213.333334-213.333333-213.333333 93.866667-213.333333 213.333333 93.866667 213.333333 213.333333 213.333334z m251.733334 0l119.466666 119.466666-59.733333 59.733334-119.466667-119.466667 59.733334-59.733333z" fill="currentColor" p-id="6160"></path></svg> 快去打开一份文档查看罢</div>
             </div>
         </main>
     </div>
 
-    <!-- 新增：设置模态框（包含互斥的壁纸选项） -->
+    <!-- 新增：设置模态框（包含互斥的壁纸选项，并新增模糊开关） -->
     <div class="modal" id="settingsModal">
         <div class="modal-content">
             <span class="close" onclick="closeModal('settingsModal')">&times;</span>
@@ -1149,6 +1153,12 @@ body.dark .doc-ocd {
             <div class="checkbox-row">
                 <input type="checkbox" id="useNoFlowWallpaper" <?= $userSettings['useNoFlowWallpaper'] ? 'checked' : '' ?>>
                 <label for="useNoFlowWallpaper">启用无流量壁纸（纯CSS渐变，零带宽）</label>
+            </div>
+
+            <!-- 新增：背景图片模糊开关 -->
+            <div class="checkbox-row">
+                <input type="checkbox" id="wallpaperBlur" <?= $userSettings['wallpaperBlur'] ? 'checked' : '' ?>>
+                <label for="wallpaperBlur">背景图片模糊效果</label>
             </div>
 
             <label>壁纸URL列表（每行一个）</label>
@@ -1176,8 +1186,9 @@ body.dark .doc-ocd {
             const settingsBtn = document.getElementById('settingsBtn');
             const docList = document.getElementById('docList');
             const contentArea = document.getElementById('contentArea');
+            const markdownDiv = document.getElementById('markdownRenderer');
 
-    const CSRF_TOKEN = '<?php echo $csrf_token; ?>';
+            const CSRF_TOKEN = '<?php echo $csrf_token; ?>';
 
             // 从PHP传递的用户设置
             const userSettings = <?php echo json_encode($userSettings); ?>;
@@ -1185,32 +1196,75 @@ body.dark .doc-ocd {
 
             let autoSwitchInterval = null;
             let currentWallpaperUrl = null;
+            let rotateTimer = null; // 用于设置图标旋转动画的定时器
 
-let rotateTimer = null; // 用于设置图标旋转动画的定时器
+            // ---------- 新增：模糊层管理 ----------
+            function updateBlurLayer(settings) {
+                // 移除现有模糊层
+                const existingBlur = document.querySelector('.wallpaper-blur');
+                if (existingBlur) existingBlur.remove();
+
+                // 只有当启用外部壁纸且开启模糊时才添加模糊层
+                if (settings.useWallpaper && settings.wallpaperBlur) {
+                    const blurDiv = document.createElement('div');
+                    blurDiv.className = 'wallpaper-blur';
+                    contentArea.appendChild(blurDiv);
+                    // 立即设置高度，并监听变化
+                    setBlurLayerHeight();
+                }
+            }
+
+            // 设置模糊层高度为内容区的滚动高度（覆盖整个滚动区域）
+            function setBlurLayerHeight() {
+                const blur = document.querySelector('.wallpaper-blur');
+                if (!blur) return;
+                // 使用 scrollHeight 确保覆盖所有内容
+                blur.style.height = contentArea.scrollHeight + 'px';
+            }
+
+            // 在内容变化、窗口大小改变、侧边栏折叠时调用
+            function refreshBlurHeight() {
+                setBlurLayerHeight();
+            }
+
+            // 使用 ResizeObserver 监听 contentArea 尺寸变化（包括内容滚动高度变化）
+            const resizeObserver = new ResizeObserver(() => {
+                refreshBlurHeight();
+            });
+            resizeObserver.observe(contentArea);
+            // 同时观察 markdown 内容的变化（例如新文档加载）
+            const observer = new MutationObserver(() => {
+                refreshBlurHeight();
+            });
+            observer.observe(markdownDiv, { childList: true, subtree: true, characterData: true });
 
             // 应用背景壁纸到 content-area
             function applyWallpaper(url) {
                 if (!url) return;
                 // 清除其他背景类
                 contentArea.classList.remove('noflow-wallpaper');
-                contentArea.classList.add('has-wallpaper');
                 contentArea.style.backgroundImage = `url('${url}')`;
                 currentWallpaperUrl = url;
+                // 模糊层已在 updateBlurLayer 中处理
             }
 
             // 应用无流量壁纸
             function applyNoFlowWallpaper() {
-                contentArea.classList.remove('has-wallpaper');
                 contentArea.classList.add('noflow-wallpaper');
                 contentArea.style.backgroundImage = ''; // 清除外部背景
                 currentWallpaperUrl = null;
+                // 移除模糊层（无流量壁纸无需模糊）
+                const blur = document.querySelector('.wallpaper-blur');
+                if (blur) blur.remove();
             }
 
             // 清除所有壁纸效果
             function clearAllWallpaper() {
-                contentArea.classList.remove('has-wallpaper', 'noflow-wallpaper');
+                contentArea.classList.remove('noflow-wallpaper');
                 contentArea.style.backgroundImage = '';
                 currentWallpaperUrl = null;
+                const blur = document.querySelector('.wallpaper-blur');
+                if (blur) blur.remove();
             }
 
             // 从URL列表中随机选择一个
@@ -1245,10 +1299,11 @@ let rotateTimer = null; // 用于设置图标旋转动画的定时器
                         const img = new Image();
                         img.onload = function() {
                             applyWallpaper(newUrl);
+                            // 根据设置更新模糊层
+                            updateBlurLayer(settings);
                         };
                         img.onerror = function() {
                             console.warn('图片加载失败:', newUrl);
-                            // 失败时尝试下一个？或者清空
                             clearAllWallpaper();
                         };
                         img.src = newUrl;
@@ -1260,7 +1315,10 @@ let rotateTimer = null; // 用于设置图标旋转动画的定时器
                             const nextUrl = getRandomUrl(urls);
                             if (nextUrl) {
                                 const img = new Image();
-                                img.onload = () => applyWallpaper(nextUrl);
+                                img.onload = () => {
+                                    applyWallpaper(nextUrl);
+                                    // 模糊层已经存在，只需保持
+                                };
                                 img.onerror = () => {};
                                 img.src = nextUrl;
                             }
@@ -1284,6 +1342,8 @@ let rotateTimer = null; // 用于设置图标旋转动画的定时器
                 sidebar.classList.toggle('collapsed');
                 updateMenuIcon();
                 localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed') ? 'true' : 'false');
+                // 侧边栏折叠可能改变内容宽度，影响滚动高度，刷新模糊层高度
+                setTimeout(refreshBlurHeight, 200); // 等待过渡完成
             }
 
             menuToggle.addEventListener('click', toggleSidebar);
@@ -1296,14 +1356,13 @@ let rotateTimer = null; // 用于设置图标旋转动画的定时器
                 }
                 localStorage.setItem('darkMode', enable ? 'dark' : 'light');
 
-    // 动态切换 highlight.js 主题
-    const hljsLink = document.querySelector('link[href*="highlight.js"]');
-    if (hljsLink) {
-        hljsLink.href = enable 
-            ? 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css'
-            : 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css';
-    }
-
+                // 动态切换 highlight.js 主题
+                const hljsLink = document.querySelector('link[href*="highlight.js"]');
+                if (hljsLink) {
+                    hljsLink.href = enable 
+                        ? 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css'
+                        : 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css';
+                }
             }
 
             function toggleDarkMode() {
@@ -1317,31 +1376,31 @@ let rotateTimer = null; // 用于设置图标旋转动画的定时器
             });
 
             // 设置按钮点击
-settingsBtn.addEventListener('click', () => {
-    if (!isLoggedIn) {
-        alert('请先登录以使用个性化设置');
-        return;
-    }
+            settingsBtn.addEventListener('click', () => {
+                if (!isLoggedIn) {
+                    alert('请先登录以使用个性化设置');
+                    return;
+                }
 
-    // 触发旋转动画
-    const iconSvg = settingsBtn.querySelector('svg');
-    if (iconSvg) {
-        // 清除之前的定时器，避免动画被提前中断
-        if (rotateTimer) clearTimeout(rotateTimer);
-        iconSvg.classList.add('rotate');
-        rotateTimer = setTimeout(() => {
-            iconSvg.classList.remove('rotate');
-            rotateTimer = null;
-        }, 800); // 与动画时长一致
-    }
+                // 触发旋转动画
+                const iconSvg = settingsBtn.querySelector('svg');
+                if (iconSvg) {
+                    if (rotateTimer) clearTimeout(rotateTimer);
+                    iconSvg.classList.add('rotate');
+                    rotateTimer = setTimeout(() => {
+                        iconSvg.classList.remove('rotate');
+                        rotateTimer = null;
+                    }, 800);
+                }
 
-    // 填充当前设置到表单
-    document.getElementById('useWallpaper').checked = userSettings.useWallpaper;
-    document.getElementById('useNoFlowWallpaper').checked = userSettings.useNoFlowWallpaper;
-    document.getElementById('wallpaperUrls').value = userSettings.wallpaperUrls.join('\n');
-    document.getElementById('autoSwitch').checked = userSettings.autoSwitch;
-    document.getElementById('settingsModal').style.display = 'flex';
-});
+                // 填充当前设置到表单
+                document.getElementById('useWallpaper').checked = userSettings.useWallpaper;
+                document.getElementById('useNoFlowWallpaper').checked = userSettings.useNoFlowWallpaper;
+                document.getElementById('wallpaperBlur').checked = userSettings.wallpaperBlur; // <--- 新增
+                document.getElementById('wallpaperUrls').value = userSettings.wallpaperUrls.join('\n');
+                document.getElementById('autoSwitch').checked = userSettings.autoSwitch;
+                document.getElementById('settingsModal').style.display = 'flex';
+            });
 
             // 关闭模态框
             window.closeModal = function(id) {
@@ -1352,6 +1411,7 @@ settingsBtn.addEventListener('click', () => {
             window.saveSettings = async function() {
                 const useWallpaper = document.getElementById('useWallpaper').checked;
                 const useNoFlowWallpaper = document.getElementById('useNoFlowWallpaper').checked;
+                const wallpaperBlur = document.getElementById('wallpaperBlur').checked; // <--- 新增
                 const wallpaperUrlsText = document.getElementById('wallpaperUrls').value;
                 const autoSwitch = document.getElementById('autoSwitch').checked;
                 const urls = wallpaperUrlsText.split('\n').map(u => u.trim()).filter(u => u !== '');
@@ -1366,49 +1426,47 @@ settingsBtn.addEventListener('click', () => {
                 // 互斥处理：如果同时勾选，自动取消无流量壁纸
                 if (useWallpaper && useNoFlowWallpaper) {
                     document.getElementById('useNoFlowWallpaper').checked = false;
-                    // 重新获取值
-                    const finalUseNoFlow = false;
-                    // 可选：提示用户
                     document.getElementById('settingsMessage').innerHTML = '<span class="error">不能同时启用两种壁纸，已自动关闭无流量壁纸</span>';
-                    // 稍后执行保存
                 }
 
                 // 重新获取最终值
                 const finalUseWallpaper = document.getElementById('useWallpaper').checked;
                 const finalUseNoFlow = document.getElementById('useNoFlowWallpaper').checked;
+                const finalBlur = document.getElementById('wallpaperBlur').checked;
 
                 // 测试图片加载（如果启用外部壁纸且有URL）
                 if (finalUseWallpaper && urls.length > 0) {
                     const testImg = new Image();
                     testImg.onload = function() {
-                        performSave(finalUseWallpaper, finalUseNoFlow, urls, autoSwitch);
+                        performSave(finalUseWallpaper, finalUseNoFlow, finalBlur, urls, autoSwitch);
                     };
                     testImg.onerror = function() {
                         document.getElementById('settingsMessage').innerHTML = '<span class="error">图片加载失败，请检查URL是否有效</span>';
                     };
                     testImg.src = urls[0];
                 } else {
-                    performSave(finalUseWallpaper, finalUseNoFlow, urls, autoSwitch);
+                    performSave(finalUseWallpaper, finalUseNoFlow, finalBlur, urls, autoSwitch);
                 }
             };
 
-            async function performSave(useWallpaper, useNoFlowWallpaper, urls, autoSwitch) {
+            async function performSave(useWallpaper, useNoFlowWallpaper, wallpaperBlur, urls, autoSwitch) {
                 const settings = {
                     useWallpaper,
                     useNoFlowWallpaper,
+                    wallpaperBlur,           // <--- 新增
                     wallpaperUrls: urls,
                     autoSwitch
                 };
 
                 try {
                     const response = await fetch('?action=saveSettings', {
-            method: 'POST',
-            headers: { 
-                'Content-Type': 'application/json',
-                'X-Csrf-Token': CSRF_TOKEN  // 添加令牌头
-            },
-            body: JSON.stringify(settings)
-});
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'X-Csrf-Token': CSRF_TOKEN
+                        },
+                        body: JSON.stringify(settings)
+                    });
                     const data = await response.json();
 
                     if (data.success) {
@@ -1476,63 +1534,51 @@ settingsBtn.addEventListener('click', () => {
                 });
             }
 
-              //  markdownDiv.innerHTML = '<div class="loader"><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="7922"><path d="M674.133333 878.933333l-98.133333-102.4c128-17.066667 230.4-123.733333 230.4-251.733333 0-123.733333-93.866667-230.4-217.6-251.733333l-89.6-89.6h38.4c196.266667 0 354.133333 153.6 354.133333 341.333333 0 128-76.8 243.2-183.466666 298.666667v85.333333l-34.133334-29.866667z m-93.866666-17.066666c-12.8 0-29.866667 4.266667-46.933334 4.266666-196.266667 0-354.133333-153.6-354.133333-341.333333 0-128 76.8-243.2 183.466667-298.666667V128l55.466666 55.466667 85.333334 85.333333c-132.266667 12.8-234.666667 123.733333-234.666667 256 0 128 98.133333 234.666667 226.133333 251.733333l85.333334 85.333334z" fill="currentColor" p-id="7923"></path></svg> 加载中...</div>';
+            let currentAbortController = null; // 用于取消前一个请求
 
+            async function loadDocument(docName) {
+                if (!docName) return;
 
-let currentAbortController = null; // 用于取消前一个请求
+                if (currentAbortController) {
+                    currentAbortController.abort();
+                }
 
-async function loadDocument(docName) {
-    if (!docName) return;
+                const contentArea = document.getElementById('contentArea');
+                contentArea.classList.add('fade-out');
 
-    // 如果已经有正在进行的请求，取消它
-    if (currentAbortController) {
-        currentAbortController.abort();
-    }
+                currentAbortController = new AbortController();
+                const { signal } = currentAbortController;
 
-    const markdownDiv = document.getElementById('markdownRenderer');
-    const contentArea = document.getElementById('contentArea');
+                try {
+                    const response = await fetch(`?action=get&doc=${encodeURIComponent(docName)}`, { signal });
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const html = await response.text();
 
-    // 开始淡出
-    contentArea.classList.add('fade-out');
+                    markdownDiv.innerHTML = html;
+                    addCopyButtonsToCodeBlocks();
+                    if (typeof hljs !== 'undefined') {
+                        document.querySelectorAll('#markdownRenderer pre code').forEach((block) => {
+                            hljs.highlightElement(block);
+                        });
+                    }
+                    window.location.hash = docName;
 
-    // 创建新的 AbortController
-    currentAbortController = new AbortController();
-    const { signal } = currentAbortController;
+                    document.querySelectorAll('.doc-item').forEach(item => {
+                        const dataDoc = item.getAttribute('data-doc');
+                        item.classList.toggle('active', dataDoc === docName);
+                    });
 
-    try {
-        const response = await fetch(`?action=get&doc=${encodeURIComponent(docName)}`, { signal });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const html = await response.text();
-
-        // 更新内容
-        markdownDiv.innerHTML = html;
-        addCopyButtonsToCodeBlocks();
-// 代码高亮
-if (typeof hljs !== 'undefined') {
-    document.querySelectorAll('#markdownRenderer pre code').forEach((block) => {
-        hljs.highlightElement(block);
-    });
-}
-        window.location.hash = docName;
-
-        // 高亮当前文档项
-        document.querySelectorAll('.doc-item').forEach(item => {
-            const dataDoc = item.getAttribute('data-doc');
-            item.classList.toggle('active', dataDoc === docName);
-        });
-
-        // 淡入新内容
-        contentArea.classList.remove('fade-out');
-    } catch (err) {
-        // 如果是手动取消的请求，不显示错误
-        if (err.name === 'AbortError') return;
-
-        contentArea.classList.remove('fade-out');
-        markdownDiv.innerHTML = `<div class="error">加载失败: ${err.message}</div>`;
-    } finally {
-        currentAbortController = null; // 请求完成或取消后清空
-    }
-}
+                    contentArea.classList.remove('fade-out');
+                    // 文档加载后刷新模糊层高度
+                    refreshBlurHeight();
+                } catch (err) {
+                    if (err.name === 'AbortError') return;
+                    contentArea.classList.remove('fade-out');
+                    markdownDiv.innerHTML = `<div class="error">加载失败: ${err.message}</div>`;
+                } finally {
+                    currentAbortController = null;
+                }
+            }
 
             docList.addEventListener('click', (e) => {
                 const target = e.target.closest('.doc-item');
@@ -1554,7 +1600,6 @@ if (typeof hljs !== 'undefined') {
             }
 
             function loadInitialDoc() {
-                const markdownDiv = document.getElementById('markdownRenderer');
                 if (window.location.hash.length > 1) {
                     const hashName = decodeURIComponent(window.location.hash.substring(1));
                     const items = document.querySelectorAll('.doc-item');
@@ -1570,7 +1615,6 @@ if (typeof hljs !== 'undefined') {
             }
 
             window.addEventListener('hashchange', () => {
-                const markdownDiv = document.getElementById('markdownRenderer');
                 if (window.location.hash.length > 1) {
                     const docName = decodeURIComponent(window.location.hash.substring(1));
                     loadDocument(docName);
@@ -1582,7 +1626,6 @@ if (typeof hljs !== 'undefined') {
             initFromLocalStorage();
             loadInitialDoc();
         })();
-
     </script>
 
     <?php if (!$parsedownAvailable): ?>
