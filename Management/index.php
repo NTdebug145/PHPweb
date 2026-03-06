@@ -21,7 +21,20 @@ define('GROUP_AVATAR_DIR', DATA_DIR . '/group_avatars');
 
 // ---------- 辅助函数（从主文件复制所需部分）----------
 function getUsers() {
-    return json_decode(file_get_contents(USERS_FILE), true) ?: [];
+    $users = [];
+    $files = glob(DATA_DIR . '/users_*.json');
+    foreach ($files as $file) {
+        $content = file_get_contents($file);
+        $data = json_decode($content, true);
+        if (is_array($data)) {
+            $users = array_merge($users, $data);
+        }
+    }
+    // 按ID排序，保持一致性（可选）
+    usort($users, function($a, $b) {
+        return $a['id'] <=> $b['id'];
+    });
+    return $users;
 }
 
 function getUserById($id) {
