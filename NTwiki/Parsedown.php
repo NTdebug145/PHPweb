@@ -745,46 +745,91 @@ class Parsedown
     #
     # Quote
 
-    protected function blockQuote($Line)
+protected function blockQuote($Line)
+{
+    // 自定义样式语法：>/#颜色1/#颜色2/ 内容（仅当前行，纯文本输出）
+    if (preg_match('/^>\\/(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3})\\/(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3})\\/(.*)$/', $Line['text'], $matches))
     {
-        if (preg_match('/^>[ ]?+(.*+)/', $Line['text'], $matches))
-        {
-            $Block = array(
-                'element' => array(
-                    'name' => 'blockquote',
-                    'handler' => array(
-                        'function' => 'linesElements',
-                        'argument' => (array) $matches[1],
-                        'destination' => 'elements',
-                    )
+        $color1 = $matches[1];        // 左边竖线颜色
+        $color2 = $matches[2];        // 背景色
+        $content = $matches[3];        // 斜杠后的内容（仅当前行）
+
+        $style = "border-left-color: $color1; background-color: $color2;";
+
+        // 使用自定义处理器：转义内容，保留换行（单行时无换行）
+        $Block = array(
+            'type' => 'Quote',         // 标记为引用类型，但不会继续合并
+            'element' => array(
+                'name' => 'blockquote',
+                'attributes' => array('style' => $style),
+                'handler' => array(
+                    'function' => 'textPlainLines',
+                    'argument' => array($content),
+                    'destination' => 'rawHtml',
                 ),
-            );
-
-            return $Block;
-        }
+                'autobreak' => true,
+            ),
+        );
+        return $Block;
     }
 
-    protected function blockQuoteContinue($Line, array $Block)
+    // 普通引用（无自定义样式）
+    if (preg_match('/^>[ ]?+(.*+)/', $Line['text'], $matches))
     {
-        if (isset($Block['interrupted']))
-        {
-            return;
-        }
-
-        if ($Line['text'][0] === '>' and preg_match('/^>[ ]?+(.*+)/', $Line['text'], $matches))
-        {
-            $Block['element']['handler']['argument'] []= $matches[1];
-
-            return $Block;
-        }
-
-        if ( ! isset($Block['interrupted']))
-        {
-            $Block['element']['handler']['argument'] []= $Line['text'];
-
-            return $Block;
-        }
+        $Block = array(
+            'type' => 'Quote',
+            'element' => array(
+                'name' => 'blockquote',
+                'handler' => array(
+                    'function' => 'linesElements',
+                    'argument' => (array) $matches[1],
+                    'destination' => 'elements',
+                )
+            ),
+        );
+        return $Block;
     }
+}
+
+protected function textPlainLines($lines, $nonNestables = array())
+{
+    if (!is_array($lines)) {
+        $lines = array($lines);
+    }
+    $escapedLines = array();
+    foreach ($lines as $line) {
+        $escapedLines[] = self::escape($line);
+    }
+    return implode('<br>', $escapedLines);
+}
+
+protected function blockQuoteContinue($Line, array $Block)
+{
+    // 如果当前引用块是自定义样式（通过检测 handler 是否为 textPlainLines 来识别）
+    if (isset($Block['element']['handler']['function']) && $Block['element']['handler']['function'] === 'textPlainLines')
+    {
+        // 自定义引用块不继续合并任何行，直接返回 null
+        return null;
+    }
+
+    // 以下为原逻辑，仅适用于普通引用
+    if (isset($Block['interrupted']))
+    {
+        return;
+    }
+
+    if ($Line['text'][0] === '>' and preg_match('/^>[ ]?+(.*+)/', $Line['text'], $matches))
+    {
+        $Block['element']['handler']['argument'] []= $matches[1];
+        return $Block;
+    }
+
+    if ( ! isset($Block['interrupted']))
+    {
+        $Block['element']['handler']['argument'] []= $Line['text'];
+        return $Block;
+    }
+}
 
     #
     # Rule
@@ -965,9 +1010,30 @@ class Parsedown
         }
 
         foreach ($headerCells as $index => $headerCell)
-        {
-            $headerCell = trim($headerCell);
+{
+    $headerCell = trim($headerCell);
 
+    // ----- 新增：解析背景色标记 -----
+    $bgcolor = null;
+    $headerCell = preg_replace_callback('/\{bgcolor:([^}]+)\}/', function($matches) use (&$bgcolor) {
+        $bgcolor = $matches[1];
+        return '';
+    }, $headerCell);
+    // ------------------------------
+
+    $style = '';
+    if (isset($alignments[$index]))
+    {
+        $alignment = $alignments[$index];
+        $style = "text-align: $alignment;";
+    }
+
+    // ----- 新增：添加背景色样式 -----
+    if ($bgcolor)
+    {
+        $style .= ' background-color: ' . $bgcolor . ';';
+    }
+    // ------------------------------
             $HeaderElement = array(
                 'name' => 'th',
                 'handler' => array(
@@ -1037,28 +1103,47 @@ class Parsedown
 
             $cells = array_slice($matches[0], 0, count($Block['alignments']));
 
-            foreach ($cells as $index => $cell)
-            {
-                $cell = trim($cell);
+foreach ($cells as $index => $cell)
+{
+    $cell = trim($cell);
 
-                $Element = array(
-                    'name' => 'td',
-                    'handler' => array(
-                        'function' => 'lineElements',
-                        'argument' => $cell,
-                        'destination' => 'elements',
-                    )
-                );
+    // ----- 新增：解析背景色标记 -----
+    $bgcolor = null;
+    $cell = preg_replace_callback('/\{bgcolor:([^}]+)\}/', function($matches) use (&$bgcolor) {
+        $bgcolor = $matches[1];
+        return '';
+    }, $cell);
+    // ------------------------------
 
-                if (isset($Block['alignments'][$index]))
-                {
-                    $Element['attributes'] = array(
-                        'style' => 'text-align: ' . $Block['alignments'][$index] . ';',
-                    );
-                }
+    $style = '';
+    if (isset($Block['alignments'][$index]))
+    {
+        $style = 'text-align: ' . $Block['alignments'][$index] . ';';
+    }
 
-                $Elements []= $Element;
-            }
+    // ----- 新增：添加背景色样式 -----
+    if ($bgcolor)
+    {
+        $style .= ' background-color: ' . $bgcolor . ';';
+    }
+    // ------------------------------
+
+    $Element = array(
+        'name' => 'td',
+        'handler' => array(
+            'function' => 'lineElements',
+            'argument' => $cell,
+            'destination' => 'elements',
+        )
+    );
+
+    if ($style)
+    {
+        $Element['attributes'] = array('style' => $style);
+    }
+
+    $Elements []= $Element;
+}
 
             $Element = array(
                 'name' => 'tr',
@@ -1350,40 +1435,92 @@ class Parsedown
         }
     }
 
-    protected function inlineImage($Excerpt)
-    {
-        if ( ! isset($Excerpt['text'][1]) or $Excerpt['text'][1] !== '[')
-        {
-            return;
-        }
-
-        $Excerpt['text']= substr($Excerpt['text'], 1);
-
-        $Link = $this->inlineLink($Excerpt);
-
-        if ($Link === null)
-        {
-            return;
-        }
+protected function inlineAudioExtended($Excerpt)
+{
+    // 正则匹配 !![]() 语法，允许 URL 中包含空格和括号（但不能包含 )）
+    // 模式说明：
+    //   ^!!\[([^\]]*)\]          -> 匹配 !! 后跟 [alt]
+    //   \(\s*([^)]+?)\)          -> 匹配 (url)，url 允许除 ) 外的任意字符（包括空格、括号）
+    //   (?:\s+"([^"]*)")?        -> 可选的双引号标题
+    //   \s*\)                    -> 结尾括号
+    $pattern = '/^!!\[([^\]]*)\]\(\s*((?:[^()]|\([^)]*\))*)(?:\s+"([^"]*)")?\s*\)/';
+    
+    if (preg_match($pattern, $Excerpt['text'], $matches)) {
+        $alt = $matches[1];
+        $url = trim($matches[2]);
+        $title = isset($matches[3]) ? $matches[3] : null;
 
         $Inline = array(
-            'extent' => $Link['extent'] + 1,
+            'extent' => strlen($matches[0]),          // 整个语法的长度
             'element' => array(
-                'name' => 'img',
+                'name' => 'audio',
                 'attributes' => array(
-                    'src' => $Link['element']['attributes']['href'],
-                    'alt' => $Link['element']['handler']['argument'],
+                    'controls' => 'controls',
+                    'src' => $url,
                 ),
                 'autobreak' => true,
             ),
         );
 
-        $Inline['element']['attributes'] += $Link['element']['attributes'];
-
-        unset($Inline['element']['attributes']['href']);
+        if ($title) {
+            $Inline['element']['attributes']['title'] = $title;
+        } elseif ($alt) {
+            $Inline['element']['attributes']['title'] = $alt;
+        }
 
         return $Inline;
     }
+    return null;
+}
+
+protected function inlineImage($Excerpt)
+{
+// ---------- 音频语法检测 !![]() ----------
+if (isset($Excerpt['text'][1]) && $Excerpt['text'][1] === '!' && isset($Excerpt['text'][2]) && $Excerpt['text'][2] === '[')
+{
+    // 直接使用扩展正则解析音频，不依赖 inlineLink
+    return $this->inlineAudioExtended($Excerpt);
+}
+
+    // ---------- 普通图片处理（![]()） ----------
+    if ( ! isset($Excerpt['text'][1]) or $Excerpt['text'][1] !== '[')
+    {
+        return;
+    }
+
+    $Excerpt['text'] = substr($Excerpt['text'], 1);
+
+    $Link = $this->inlineLink($Excerpt);
+
+    if ($Link === null)
+    {
+        return $this->inlineImageExtended($Excerpt);
+    }
+
+    $Inline = array(
+        'extent' => $Link['extent'] + 1,
+        'element' => array(
+            'name' => 'img',
+            'attributes' => array(
+                'src' => $Link['element']['attributes']['href'],
+                'alt' => $Link['element']['handler']['argument'],
+            ),
+            'autobreak' => true,
+        ),
+    );
+
+    $Inline['element']['attributes'] += $Link['element']['attributes'];
+
+    unset($Inline['element']['attributes']['href']);
+
+    $remaining = substr($Excerpt['text'], $Link['extent']);
+    if (trim($remaining) !== '') {
+        $this->parseImageParameters($remaining, $Inline);
+    }
+
+    return $Inline;
+
+}
 
     protected function inlineLink($Excerpt)
     {
@@ -1897,6 +2034,87 @@ class Parsedown
 
         return $Element;
     }
+
+
+protected function inlineImageExtended($Excerpt)
+{
+    // 正则匹配扩展图片语法：![alt](url "title" param1 param2 ...)
+    $pattern = '/^\[([^\]]*)\]\(\s*([^\s\)]+)(?:\s+"([^"]*)")?(?:\s+([^)]*))?\s*\)/';
+    if (preg_match($pattern, $Excerpt['text'], $matches)) {
+        $alt = $matches[1];
+        $url = $matches[2];
+        $title = isset($matches[3]) ? $matches[3] : null;
+        $params = isset($matches[4]) ? $matches[4] : '';
+
+        $Inline = array(
+            'extent' => strlen($matches[0]) + 1, // +1 补偿开头的 '!'
+            'element' => array(
+                'name' => 'img',
+                'attributes' => array(
+                    'src' => $url,
+                    'alt' => $alt,
+                ),
+                'autobreak' => true,
+            ),
+        );
+
+        if ($title) {
+            $Inline['element']['attributes']['title'] = $title;
+        }
+
+        // 解析额外参数
+        $this->parseImageParameters($params, $Inline);
+
+        return $Inline;
+    }
+    return null;
+}
+
+protected function parseImageParameters($paramString, &$Inline)
+{
+    $tokens = [];
+    $remaining = $paramString;
+    while (preg_match('/^\s*(\d+(?:\.\d+)?|[a-zA-Z]+)/', $remaining, $match)) {
+        $token = $match[1];
+        $tokens[] = $token;
+        $remaining = substr($remaining, strlen($match[0]));
+    }
+
+    $width = null;
+    $height = null;
+    $adaptive = false;
+    $index = 0;
+
+    foreach ($tokens as $token) {
+        if (is_numeric($token)) {
+            if ($index === 0) {
+                $width = $token;
+            } elseif ($index === 1) {
+                $height = $token;
+            }
+            $index++;
+        } else {
+            if (strtolower($token) === 'adaptive' || strtolower($token) === 'true') {
+                $adaptive = true;
+            }
+            // 可扩展其他单词参数
+        }
+    }
+
+    if ($width !== null) {
+        $Inline['element']['attributes']['width'] = $width;
+    }
+    if ($height !== null) {
+        $Inline['element']['attributes']['height'] = $height;
+    }
+    if ($adaptive) {
+        if (isset($Inline['element']['attributes']['class'])) {
+            $Inline['element']['attributes']['class'] .= ' adaptive-img';
+        } else {
+            $Inline['element']['attributes']['class'] = 'adaptive-img';
+        }
+    }
+}
 
     protected function filterUnsafeUrlInAttribute(array $Element, $attribute)
     {
