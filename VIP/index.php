@@ -17,11 +17,28 @@ define('USERS_FILE', DATA_DIR . '/users.json');
 
 // 获取用户信息
 function getUserById($id) {
-    $users = json_decode(file_get_contents(USERS_FILE), true) ?: [];
+    $users = getUsers();  // 改为调用修改后的 getUsers()
     foreach ($users as $user) {
         if ($user['id'] == $id) return $user;
     }
     return null;
+}
+
+function getUsers() {
+    $users = [];
+    $files = glob(DATA_DIR . '/users_*.json');
+    foreach ($files as $file) {
+        $content = file_get_contents($file);
+        $data = json_decode($content, true);
+        if (is_array($data)) {
+            $users = array_merge($users, $data);
+        }
+    }
+    // 可选：按 ID 排序，保持一致性
+    usort($users, function($a, $b) {
+        return $a['id'] <=> $b['id'];
+    });
+    return $users;
 }
 
 $user = getUserById($userId);
