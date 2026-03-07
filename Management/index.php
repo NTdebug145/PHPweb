@@ -489,6 +489,11 @@ if (empty($csrf_token)) {
     <div class="header">
         <div class="left-actions">
             <!-- 暗黑模式切换按钮 -->
+            <a href="/index.php" class="dark-mode-btn" style="text-decoration: none; margin-right: 8px;" title="返回首页">
+                <span class="icon-btn" id="homeBtn" title="返回首页">
+                    <svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="7257"><path d="M424.319032 885.693004 424.319032 620.123556 601.364307 620.123556 601.364307 885.693004 822.671669 885.693004 822.671669 531.60143 955.455881 531.60143 512.841158 133.24777 70.226434 531.60143 203.01167 531.60143 203.01167 885.693004Z" fill="currentColor" p-id="7258"></path></svg>
+                </span>
+            </a>
             <button class="dark-mode-btn" id="darkModeToggle">
                 <!-- 太阳 SVG -->
                 <svg class="sun-svg" style="width: 1em; height: 1em; vertical-align: middle; fill: currentColor; overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="787">
