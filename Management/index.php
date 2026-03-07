@@ -1,1013 +1,1159 @@
 <?php
-// 设置 Session 路径并启动
 session_set_cookie_params(['path' => '/']);
 session_start();
 
-// 未登录则跳转回首页
 if (!isset($_SESSION['user_id'])) {
     header('Location: /index.php');
     exit;
 }
 
-$userId = $_SESSION['user_id'];
+define('WAREHOUSE_DIR', __DIR__ . '/data/warehouse');
+if (!file_exists(WAREHOUSE_DIR)) {
+    mkdir(WAREHOUSE_DIR, 0755, true);
+}
 
-// 定义目录常量（基于当前文件位置）
-define('ROOT_DIR', dirname(__DIR__));          // 网站根目录
-define('DATA_DIR', ROOT_DIR . '/data');
-define('USERS_FILE', DATA_DIR . '/users.json');
-define('GROUPS_FILE', DATA_DIR . '/groups.json');
-define('AVATAR_DIR', DATA_DIR . '/avatars');
-define('GROUP_AVATAR_DIR', DATA_DIR . '/group_avatars');
+// ---------- 物品信息映射 ----------
+$itemInfoMap = [];
+$levelColors = [
+    1 => '#f0f0f0', // 淡白
+    2 => '#a5d6a5', // 淡绿
+    3 => '#90caf9', // 淡蓝
+    4 => '#ce93d8', // 淡紫
+    5 => '#ffd54f', // 淡金
+    6 => '#ef9a9a', // 淡红
+];
 
-// ---------- 辅助函数（从主文件复制所需部分）----------
-function getUsers() {
-    $users = [];
-    $files = glob(DATA_DIR . '/users_*.json');
+$itemInfoFile = __DIR__ . '/item/iteminfo.json';
+if (file_exists($itemInfoFile)) {
+    $content = file_get_contents($itemInfoFile);
+    $data = json_decode($content, true);
+    if (is_array($data)) {
+        foreach ($data as $entry) {
+            if (isset($entry['itemid'])) {
+                $itemInfoMap[$entry['itemid']] = $entry;
+            }
+        }
+    }
+}
+// 确保至少有一个默认物品
+if (!isset($itemInfoMap['default_1x1'])) {
+    $itemInfoMap['default_1x1'] = [
+        'itemid' => 'default_1x1',
+        'block' => '1x1',
+        'img' => '',
+        'level' => 1,
+        'info' => '默认基础物品'
+    ];
+}
+
+// ---------- 仓库数据分片存储函数 ----------
+function getAllWarehouses() {
+    $all = [];
+    $files = glob(WAREHOUSE_DIR . '/warehouse_*.json');
     foreach ($files as $file) {
-        $content = file_get_contents($file);
-        $data = json_decode($content, true);
+        $data = json_decode(file_get_contents($file), true);
         if (is_array($data)) {
-            $users = array_merge($users, $data);
+            $all = array_merge($all, $data);
         }
     }
-    // 按ID排序，保持一致性（可选）
-    usort($users, function($a, $b) {
-        return $a['id'] <=> $b['id'];
-    });
-    return $users;
+    return $all;
 }
 
-function getUserById($id) {
-    $users = getUsers();
-    foreach ($users as $user) {
-        if ($user['id'] == $id) return $user;
+function saveAllWarehouses($warehouses) {
+    array_map('unlink', glob(WAREHOUSE_DIR . '/warehouse_*.json'));
+    $chunks = array_chunk($warehouses, 50);
+    foreach ($chunks as $i => $chunk) {
+        file_put_contents(WAREHOUSE_DIR . '/warehouse_' . ($i+1) . '.json', json_encode($chunk, JSON_UNESCAPED_UNICODE), LOCK_EX);
     }
-    return null;
 }
 
-function getFriends($userId) {
-    $file = DATA_DIR . '/friends_' . $userId . '.json';
-    if (!file_exists($file)) return [];
-    return json_decode(file_get_contents($file), true) ?: [];
-}
+function getWarehouseByUserId($userId) {
+    global $itemInfoMap, $levelColors;
+    $all = getAllWarehouses();
+    foreach ($all as $wh) {
+        if ($wh['user_id'] == $userId) {
+            $items = $wh['items'];
+            // 补充详细信息并验证尺寸
+            foreach ($items as &$item) {
+                $itemid = $item['itemid'] ?? null;
+                if ($itemid && isset($itemInfoMap[$itemid])) {
+                    $info = $itemInfoMap[$itemid];
+                    $item['name'] = $info['block'] ?? $itemid;
+                    $item['details'] = $info['info'] ?? '';
+                    $level = $info['level'] ?? 1;
+                    $item['color'] = $levelColors[$level] ?? $levelColors[1];
+                    $item['img'] = !empty($info['img']) ? ('item/img/' . $info['img']) : '';
 
-function getGroupInfo($groupId) {
-    $groups = json_decode(file_get_contents(GROUPS_FILE), true) ?: [];
-    foreach ($groups as $group) {
-        if ($group['id'] == $groupId) {
-            return $group;
+                    // 解析原始尺寸
+                    $parts = explode('x', $info['block']);
+                    $origW = (int)($parts[0] ?? 1);
+                    $origH = (int)($parts[1] ?? 1);
+
+                    // 获取存储的尺寸
+                    $storedW = isset($item['w']) ? (int)$item['w'] : $origW;
+                    $storedH = isset($item['h']) ? (int)$item['h'] : $origH;
+
+                    // 验证面积是否一致（允许旋转）
+                    if ($storedW * $storedH != $origW * $origH) {
+                        // 面积不匹配，可能是错误数据，修正为原始尺寸
+                        $item['w'] = $origW;
+                        $item['h'] = $origH;
+                    } else {
+                        // 面积一致，保留存储的尺寸（可能是旋转后的状态）
+                        $item['w'] = $storedW;
+                        $item['h'] = $storedH;
+                    }
+
+                    // 记录原始尺寸，用于前端判断图片旋转
+                    $item['origW'] = $origW;
+                    $item['origH'] = $origH;
+                    $item['canRotate'] = ($origW != $origH);
+                } else {
+                    // 未知 itemid，使用默认属性
+                    $item['name'] = $item['name'] ?? '未知';
+                    $item['color'] = $item['color'] ?? $levelColors[1];
+                    $item['canRotate'] = $item['canRotate'] ?? false;
+                    $item['details'] = $item['details'] ?? '';
+                    $item['img'] = $item['img'] ?? '';
+                    $item['origW'] = $item['w'] ?? 1;
+                    $item['origH'] = $item['h'] ?? 1;
+                }
+            }
+            return $items;
         }
     }
-    return null;
+    // 用户无仓库，创建默认物品
+    $defaultId = 'default_1x1';
+    $info = $itemInfoMap[$defaultId];
+    $parts = explode('x', $info['block']);
+    $origW = (int)($parts[0] ?? 1);
+    $origH = (int)($parts[1] ?? 1);
+    $defaultItems = [[
+        'itemid' => $defaultId,
+        'x' => 0, 'y' => 0,
+        'w' => $origW, 'h' => $origH,
+        'name' => $info['block'],
+        'color' => $levelColors[$info['level']] ?? $levelColors[1],
+        'canRotate' => ($origW != $origH),
+        'details' => $info['info'] ?? '',
+        'img' => !empty($info['img']) ? ('item/img/' . $info['img']) : '',
+        'origW' => $origW,
+        'origH' => $origH
+    ]];
+    $all[] = ['user_id' => $userId, 'items' => $defaultItems];
+    saveAllWarehouses($all);
+    return $defaultItems;
 }
-// -------------------------------------------------
 
-// 获取当前用户信息
-$user = getUserById($userId);
-if (!$user) {
-    session_destroy();
-    header('Location: /index.php');
+function saveWarehouseForUser($userId, $items) {
+    // 仅存储必要字段：itemid, x, y, w, h
+    $storedItems = [];
+    foreach ($items as $item) {
+        $storedItems[] = [
+            'itemid' => $item['itemid'] ?? 'unknown',
+            'x' => $item['x'],
+            'y' => $item['y'],
+            'w' => $item['w'],
+            'h' => $item['h']
+        ];
+    }
+    $all = getAllWarehouses();
+    $found = false;
+    foreach ($all as &$wh) {
+        if ($wh['user_id'] == $userId) {
+            $wh['items'] = $storedItems;
+            $found = true;
+            break;
+        }
+    }
+    if (!$found) {
+        $all[] = ['user_id' => $userId, 'items' => $storedItems];
+    }
+    saveAllWarehouses($all);
+}
+
+// ---------- API 处理 ----------
+$action = $_GET['action'] ?? '';
+if ($action) {
+    header('Content-Type: application/json');
+    try {
+        if ($action === 'getWarehouse') {
+            echo json_encode(['success' => true, 'warehouse' => getWarehouseByUserId($_SESSION['user_id'])], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        if ($action === 'saveWarehouse') {
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (!$input || !isset($input['_csrf']) || $input['_csrf'] !== $_SESSION['csrf_token']) {
+                throw new Exception('CSRF 验证失败');
+            }
+            if (!isset($input['items'])) {
+                throw new Exception('数据格式错误');
+            }
+            saveWarehouseForUser($_SESSION['user_id'], $input['items']);
+            echo json_encode(['success' => true]);
+            exit;
+        }
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
     exit;
 }
 
-// 获取已接受的好友列表（并加载详细信息）
-$friendsRaw = getFriends($userId);
-$friends = [];
-foreach ($friendsRaw as $f) {
-    if (isset($f['status']) && $f['status'] === 'accepted') {
-        if ($f['id'] == '1000000000') continue; // 过滤机器人
-        $friendUser = getUserById($f['id']);
-        if ($friendUser) {
-            $friends[] = [
-                'id'   => $friendUser['id'],
-                'username' => $friendUser['username'],
-                'nickname' => $friendUser['nickname'] ?? $friendUser['username'],
-                'avatar'   => $friendUser['avatar'] ?? null,
-                'vip'      => $friendUser['vip'] ?? false,
-            ];
-        }
-    }
-}
-
-// 获取当前用户所在的群组
-$allGroups = json_decode(file_get_contents(GROUPS_FILE), true) ?: [];
-$myGroups = [];
-foreach ($allGroups as $group) {
-    if (in_array($userId, $group['members'])) {
-        // 不返回密钥等敏感信息
-        $myGroups[] = [
-            'id'      => $group['id'],
-            'name'    => $group['name'],
-            'creator' => $group['creator'],
-            'avatar'  => $group['avatar'] ?? null,
-        ];
-    }
-}
-
-// 判断是否为 VIP
-$isVip = isset($user['vip']) && $user['vip'] === true;
-
-// 格式化注册时间
-$registered = date('Y-m-d H:i:s', $user['registered']);
-
-// 验证模式映射
-$verifyModeMap = [
-    'allow_all'   => '允许任何人',
-    'need_verify' => '需要验证',
-    'deny_all'    => '禁止添加'
-];
-$verifyModeText = $verifyModeMap[$user['verify_mode'] ?? 'need_verify'] ?? '未知';
-
-// 获取当前用户 CSRF 令牌（从 session 中获取）
-$csrf_token = $_SESSION['csrf_token'] ?? '';
-if (empty($csrf_token)) {
-    $csrf_token = bin2hex(random_bytes(32));
-    $_SESSION['csrf_token'] = $csrf_token;
-}
+// 非 API 请求：输出画布页面
+$csrfToken = $_SESSION['csrf_token'] ?? bin2hex(random_bytes(32));
+$_SESSION['csrf_token'] = $csrfToken;
 ?>
 <!DOCTYPE html>
-<html>
+<html lang="zh">
 <head>
     <meta charset="UTF-8">
-    <title>NTC - Management</title>
+    <title>我的仓库 · 带贴图</title>
     <style>
-        /* ========== 浅色模式变量 ========== */
-        :root {
-            --bg-color: #f0f2f5;
-            --header-bg: #fff;
-            --text-color: #333;
-            --border-color: #ddd;
-            --card-bg: #fff;
-            --btn-bg: transparent;
-            --btn-hover-bg: rgba(128,128,128,0.2);
-            --friend-item-hover: #f5f5f5;
-            --modal-bg: #fff;
-            --input-bg: #fff;
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
         }
-
-        /* ========== 暗黑模式变量 ========== */
-        .dark-mode {
-            --bg-color: #1e1e1e;
-            --header-bg: #2d2d2d;
-            --text-color: #eee;
-            --border-color: #444;
-            --card-bg: #2d2d2d;
-            --btn-bg: transparent;
-            --btn-hover-bg: rgba(255,255,255,0.1);
-            --friend-item-hover: #3a3a3a;
-            --modal-bg: #2d2d2d;
-            --input-bg: #3a3a3a;
-        }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Microsoft YaHei', sans-serif; }
         body {
-            background: var(--bg-color);
+            background: #1a2a2f;
             min-height: 100vh;
-            transition: background-color 0.3s, color 0.3s;
-            color: var(--text-color);
-        }
-        .header {
-            height: 60px;
-            background: var(--header-bg);
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 0 20px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-            border-bottom: 1px solid var(--border-color);
-            transition: background-color 0.3s, border-color 0.3s;
+            justify-content: flex-end;
+            align-items: flex-start;
+            font-family: 'Segoe UI', Roboto, sans-serif;
         }
-        .left-actions {
-            display: flex;
-            align-items: center;
-        }
-        .dark-mode-btn {
-            background: var(--btn-bg);
-            border: none;
-            font-size: 24px;
-            cursor: pointer;
-            padding: 5px 10px;
-            color: var(--text-color);
-            line-height: 1;
-            border-radius: 30px;
-            transition: background 0.2s;
-        }
-        .dark-mode-btn:hover {
-            background: var(--btn-hover-bg);
-        }
-        /* 太阳/月亮 SVG 显示控制 */
-        .sun-svg { display: none; }
-        .moon-svg { display: inline-block; }
-        .dark-mode .sun-svg { display: inline-block; }
-        .dark-mode .moon-svg { display: none; }
-
-        .user-info {
-            display: flex;
-            align-items: center;
-            padding: 5px;
-            border-radius: 30px;
-            cursor: default;
-        }
-        .avatar {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            margin-right: 10px;
-            object-fit: cover;
-        }
-        .username {
-            font-weight: 500;
-            color: var(--text-color);
-        }
-
-        /* 主内容区域：网格布局 */
-        .content {
-            max-width: 1400px;
-            margin: 20px auto;
-            padding: 0 20px;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-            gap: 20px;
-        }
-
-        .card {
-            background: var(--card-bg);
-            border-radius: 12px;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
-            padding: 20px;
-            transition: background-color 0.3s;
-            border: 1px solid var(--border-color);
-        }
-
-        .card h2 {
-            font-size: 18px;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-        }
-
-        .info-item {
-            display: flex;
-            margin-bottom: 12px;
-            line-height: 1.6;
-        }
-        .info-item .label {
-            width: 90px;
-            flex-shrink: 0;
-            color: #888;
-        }
-        .info-item .value {
-            flex: 1;
-            word-break: break-word;
-        }
-        .vip-badge {
-            display: inline-block;
-            background: #f5b342;
-            color: #fff;
-            font-size: 12px;
-            padding: 2px 8px;
-            border-radius: 12px;
-            margin-left: 8px;
-        }
-
-        /* 好友/群组列表样式 */
-        .friend-list, .group-list {
-            max-height: 400px;
-            overflow-y: auto;
-            margin-top: 10px;
-        }
-        .friend-item, .group-item {
-            display: flex;
-            align-items: center;
-            padding: 8px 10px;
-            border-radius: 8px;
-            transition: background 0.2s;
-            margin-bottom: 4px;
-            cursor: pointer;
-            position: relative;
-        }
-        .friend-item:hover, .group-item:hover {
-            background: var(--friend-item-hover);
-        }
-        .friend-avatar, .group-avatar {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            margin-right: 12px;
-            object-fit: cover;
-            background: #ccc;
-        }
-        .friend-info, .group-info {
-            flex: 1;
+        .canvas-wrapper {
+            width: 50%;
+            max-width: 900px;
+            margin: 20px;
             display: flex;
             flex-direction: column;
+            gap: 15px;
         }
-        .friend-name, .group-name {
-            font-weight: 500;
-            font-size: 15px;
+        canvas {
+            display: block;
+            width: 100%;
+            background: #243238;
+            border-radius: 8px;
+            box-shadow: 0 0 0 1px #3c5a64;
+            cursor: grab;
         }
-        .friend-id, .group-id {
-            font-size: 12px;
-            color: #888;
+        canvas.dragging {
+            cursor: grabbing;
         }
-        .group-creator-tag {
-            background: #fedf00;
-            color: #ffffff;
-            font-size: 10px;
-            padding: 2px 6px;
-            border-radius: 10px;
-            margin-left: 8px;
-            display: inline-block;
-        }
-        .empty-tip {
-            text-align: center;
-            color: #888;
-            padding: 30px 0;
+        .info-panel {
+            background: #1e3138;
+            padding: 12px 18px;
+            border-radius: 40px;
+            border: 1px solid #3f5f6b;
+            color: #a3bec9;
             font-size: 14px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
         }
-
-        .manage-btn {
-            background: transparent;
-            border: 1px solid var(--border-color);
-            border-radius: 16px;
-            padding: 4px 12px;
-            font-size: 12px;
-            cursor: pointer;
-            color: var(--text-color);
-            transition: all 0.2s;
+        .item-badge {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 15px;
         }
-        .manage-btn:hover {
-            background: var(--btn-hover-bg);
-        }
-
-        .group-manage-icon {
-            width: 30px;
-            height: 30px;
-            border-radius: 50%;
+        .badge {
             display: flex;
             align-items: center;
-            justify-content: center;
+            gap: 6px;
+        }
+        .color-sample {
+            width: 18px;
+            height: 18px;
+            border-radius: 4px;
+            border: 1px solid #263b3b;
+        }
+        .rule-hint {
+            background: #27424b;
+            padding: 6px 14px;
+            border-radius: 30px;
+            color: #c7e2ec;
+            font-size: 13px;
+            border-left: 3px solid #f0b87b;
+        }
+        .footer-note {
+            text-align: center;
+            color: #5d7e8a;
+            font-size: 13px;
+        }
+        button {
+            background: #3e5f6b;
+            border: none;
+            color: white;
+            padding: 6px 18px;
+            border-radius: 30px;
+            font-weight: 600;
+            font-size: 13px;
             cursor: pointer;
-            margin-left: 8px;
-            font-size: 18px;
-            color: var(--text-color);
-            background: var(--btn-bg);
-            transition: background 0.2s;
+            box-shadow: 0 4px 0 #1b2f36;
+            transition: 0.07s ease;
+            border: 1px solid #6a8f9c;
         }
-        .group-manage-icon:hover {
-            background: var(--btn-hover-bg);
+        button:active {
+            transform: translateY(4px);
+            box-shadow: none;
         }
-        .group-manage-icon.hidden {
-            display: none;
-        }
-
-        /* 模态框样式 */
         .modal {
             display: none;
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
             background: rgba(0,0,0,0.5);
             justify-content: center;
             align-items: center;
             z-index: 2000;
         }
         .modal-content {
-            background: var(--modal-bg);
+            background: #2d2d2d;
+            color: #eee;
             padding: 25px;
             border-radius: 12px;
-            min-width: 350px;
-            max-width: 500px;
-            max-height: 80vh;
-            overflow-y: auto;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
-            color: var(--text-color);
-            border: 1px solid var(--border-color);
-        }
-        .modal-content h3 {
-            margin-bottom: 20px;
-            font-size: 18px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            min-width: 300px;
+            max-width: 400px;
         }
         .modal-content .close {
+            float: right;
             font-size: 24px;
-            font-weight: bold;
             cursor: pointer;
-            color: var(--text-color);
+            color: #aaa;
         }
-        .modal-content input,
-        .modal-content select,
-        .modal-content textarea {
-            width: 100%;
-            padding: 8px 12px;
+        .modal-content .close:hover {
+            color: #fff;
+        }
+        .item-detail-content p {
             margin: 10px 0;
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
-            font-size: 14px;
-            background: var(--input-bg);
-            color: var(--text-color);
-        }
-        .modal-content button {
-            padding: 8px 16px;
-            margin-right: 10px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        .modal-content button.primary {
-            background: #07c160;
-            color: white;
-        }
-        .modal-content button.danger {
-            background: #f56c6c;
-            color: white;
-        }
-        .modal-content button.secondary {
-            background: #6c757d;
-            color: white;
-        }
-
-        .member-item {
-            display: flex;
-            align-items: center;
-            padding: 10px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        .member-item:last-child {
-            border-bottom: none;
-        }
-        .member-avatar {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            margin-right: 12px;
-            object-fit: cover;
-        }
-        .member-info {
-            flex: 1;
-        }
-        .member-name {
-            font-weight: 500;
-        }
-        .member-id {
-            font-size: 12px;
-            color: #888;
-        }
-        .kick-btn {
-            background: #f56c6c;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            padding: 5px 10px;
-            cursor: pointer;
-            font-size: 12px;
-        }
-        .kick-btn:hover {
-            background: #e04a4a;
-        }
-
-        .friend-delete-btn {
-            background: transparent;
-            border: none;
-            color: #f56c6c;
-            font-size: 18px;
-            cursor: pointer;
-            margin-left: 8px;
+            line-height: 1.5;
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <div class="left-actions">
-            <!-- 暗黑模式切换按钮 -->
-            <a href="/index.php" class="dark-mode-btn" style="text-decoration: none; margin-right: 8px;" title="返回首页">
-                <span class="icon-btn" id="homeBtn" title="返回首页">
-                    <svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="7257"><path d="M424.319032 885.693004 424.319032 620.123556 601.364307 620.123556 601.364307 885.693004 822.671669 885.693004 822.671669 531.60143 955.455881 531.60143 512.841158 133.24777 70.226434 531.60143 203.01167 531.60143 203.01167 885.693004Z" fill="currentColor" p-id="7258"></path></svg>
-                </span>
-            </a>
-            <button class="dark-mode-btn" id="darkModeToggle">
-                <!-- 太阳 SVG -->
-                <svg class="sun-svg" style="width: 1em; height: 1em; vertical-align: middle; fill: currentColor; overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="787">
-                    <path d="M501.48 493.55m-233.03 0a233.03 233.03 0 1 0 466.06 0 233.03 233.03 0 1 0-466.06 0Z" fill="#F9C626" p-id="788"></path>
-                    <path d="M501.52 185.35H478.9c-8.28 0-15-6.72-15-15V87.59c0-8.28 6.72-15 15-15h22.62c8.28 0 15 6.72 15 15v82.76c0 8.28-6.72 15-15 15zM281.37 262.76l-16 16c-5.86 5.86-15.36 5.86-21.21 0l-58.52-58.52c-5.86-5.86-5.86-15.36 0-21.21l16-16c5.86-5.86 15.36-5.86 21.21 0l58.52 58.52c5.86 5.86 5.86 15.35 0 21.21zM185.76 478.48v22.62c0 8.28-6.72 15-15 15H88c-8.28 0-15-6.72-15-15v-22.62c0-8.28 6.72-15 15-15h82.76c8.28 0 15 6.72 15 15zM270.69 698.63l16 16c5.86 5.86 5.86 15.36 0 21.21l-58.52 58.52c-5.86 5.86-15.36 5.86-21.21 0l-16-16c-5.86-5.86-5.86-15.36 0-21.21l58.52-58.52c5.85-5.86 15.35-5.86 21.21 0zM486.41 794.24h22.62c8.28 0 15 6.72 15 15V892c0 8.28-6.72 15-15 15h-22.62c-8.28 0-15-6.72-15-15v-82.76c0-8.28 6.72-15 15-15zM706.56 709.31l16-16c5.86-5.86 15.36-5.86 21.21 0l58.52 58.52c5.86 5.86 5.86 15.36 0 21.21l-16 16c-5.86 5.86-15.36 5.86-21.21 0l-58.52-58.52c-5.86-5.85-5.86-15.35 0-21.21zM802.17 493.59v-22.62c0-8.28 6.72-15 15-15h82.76c8.28 0 15 6.72 15 15v22.62c0 8.28-6.72 15-15 15h-82.76c-8.28 0-15-6.72-15-15zM717.24 273.44l-16-16c-5.86-5.86-5.86-15.36 0-21.21l58.52-58.52c5.86-5.86 15.36-5.86 21.21 0l16 16c5.86 5.86 5.86 15.36 0 21.21l-58.52 58.52c-5.86 5.86-15.35 5.86-21.21 0z" fill="#F9C626" p-id="789"></path>
-                </svg>
-                <!-- 月亮 SVG -->
-                <svg class="moon-svg" style="width: 1em; height: 1em; vertical-align: middle; fill: currentColor; overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="6243">
-                    <path d="M565 200.4c25.6 44.6 40.4 96.2 40.4 151.3 0 167.9-136.1 304-304 304-22.9 0-45.2-2.6-66.7-7.4C284.5 760.7 397 839.2 527.8 839.2c177 0 320.5-143.5 320.5-320.5 0-164.4-123.8-299.8-283.3-318.3zM312.9 243.6h-39.2v-39.2c0-10.8-8.8-19.6-19.6-19.6s-19.6 8.8-19.6 19.6v39.2h-39.2c-10.8 0-19.6 8.8-19.6 19.6s8.8 19.6 19.6 19.6h39.2V322c0 10.8 8.8 19.6 19.6 19.6s19.6-8.8 19.6-19.6v-39.2h39.2c10.8 0 19.6-8.8 19.6-19.6s-8.8-19.6-19.6-19.6z" fill="#FFF0C2" p-id="6244"></path>
-                    <path d="M306.9 245.6h-35.2v-35.2c0-9.7-7.9-17.6-17.6-17.6-9.7 0-17.6 7.9-17.6 17.6v35.2h-35.2c-9.7 0-17.6 7.9-17.6 17.6 0 9.7 7.9 17.6 17.6 17.6h35.2V316c0 9.7 7.9 17.6 17.6 17.6 9.7 0 17.6-7.9 17.6-17.6v-35.2h35.2c9.7 0 17.6-7.9 17.6-17.6 0-9.7-7.9-17.6-17.6-17.6z" fill="#FFC445" p-id="6245"></path>
-                    <path d="M427.8 475.3h-27.5v-27.5c0-7.6-6.2-13.8-13.8-13.8-7.6 0-13.8 6.2-13.8 13.8v27.5h-27.5c-7.6 0-13.8 6.2-13.8 13.8 0 7.6 6.2 13.8 13.8 13.8h27.5v27.5c0 7.6 6.2 13.8 13.8 13.8 7.6 0 13.8-6.2 13.8-13.8v-27.5h27.5c7.6 0 13.8-6.2 13.8-13.8 0-7.6-6.2-13.8-13.8-13.8z" fill="#FFF0C2" p-id="6246"></path>
-                    <path d="M423.6 476.7h-24.7V452c0-6.8-5.5-12.4-12.4-12.4-6.8 0-12.4 5.5-12.4 12.4v24.7h-24.7c-6.8 0-12.4 5.5-12.4 12.4 0 6.8 5.5 12.4 12.4 12.4h24.7v24.7c0 6.8 5.5 12.4 12.4 12.4 6.8 0 12.4-5.5 12.4-12.4v-24.7h24.7c6.8 0 12.4-5.5 12.4-12.4 0-6.8-5.5-12.4-12.4-12.4z" fill="#FFC445" p-id="6247"></path>
-                    <path d="M563.4 223c23.8 41.4 37.5 89.4 37.5 140.6 0 156-126.5 282.5-282.5 282.5-21.3 0-42-2.4-62-6.9 46.3 104.5 150.8 177.4 272.4 177.4 164.5 0 297.9-133.4 297.9-297.9 0-152.7-115.1-278.6-263.3-295.7z" fill="#FFB948" p-id="6248"></path>
-                </svg>
-            </button>
+<div class="canvas-wrapper">
+    <canvas id="warehouseCanvas"></canvas>
+
+    <div class="info-panel">
+        <div class="item-badge" id="colorLegend"></div>
+        <div class="rule-hint">
+            ⚡ 拖拽旋转 · 绿色边框可交换 · 颜色=等级 · 图片拉伸填充
         </div>
-        <div class="user-info">
-            <?php
-            $avatarUrl = !empty($user['avatar']) ? '/' . htmlspecialchars($user['avatar']) : 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2240%22%20height%3D%2240%22%20viewBox%3D%220%200%2040%2040%22%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%2220%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E';
-            ?>
-            <img class="avatar" src="<?php echo $avatarUrl; ?>" alt="avatar">
-            <span class="username"><?php echo htmlspecialchars($user['nickname'] ?? $user['username']); ?></span>
-        </div>
+        <button id="reloadBtn">↻ 重新加载</button>
     </div>
-
-    <div class="content">
-        <!-- 个人信息卡片 -->
-        <div class="card">
-            <h2>📋 个人信息</h2>
-            <div class="info-item">
-                <span class="label">数字ID</span>
-                <span class="value"><?php echo htmlspecialchars($user['id']); ?></span>
-            </div>
-            <div class="info-item">
-                <span class="label">用户名</span>
-                <span class="value"><?php echo htmlspecialchars($user['username']); ?></span>
-            </div>
-            <div class="info-item">
-                <span class="label">昵称</span>
-                <span class="value"><?php echo htmlspecialchars($user['nickname'] ?? $user['username']); ?></span>
-            </div>
-            <div class="info-item">
-                <span class="label">简介</span>
-                <span class="value"><?php echo htmlspecialchars($user['bio'] ?? '未填写'); ?></span>
-            </div>
-            <div class="info-item">
-                <span class="label">注册时间</span>
-                <span class="value"><?php echo $registered; ?></span>
-            </div>
-            <div class="info-item">
-                <span class="label">验证模式</span>
-                <span class="value"><?php echo $verifyModeText; ?></span>
-            </div>
-            <div class="info-item">
-                <span class="label">VIP 状态</span>
-                <span class="value">
-                    <?php if ($isVip): ?>
-                        <span class="vip-badge">VIP</span>
-                    <?php else: ?>
-                        普通用户
-                    <?php endif; ?>
-                </span>
-            </div>
-
-<div class="info-item">
-    <span class="label"></span>
-    <span class="value">
-        <button class="manage-btn" onclick="showDeleteAccountModal()" style="background:#f56c6c; color:white; border:none;">注销账号</button>
-    </span>
+    <div class="footer-note">
+        ⚡ 智能贴合 + 重叠自动旋转 + 智能互换 + 固定移动物品
+    </div>
 </div>
 
-            <!-- 预留扩展：可以添加更多字段，如邮箱、手机等 -->
-        </div>
-
-        <!-- 好友列表卡片 -->
-        <div class="card">
-            <h2>
-                <span>👥 好友列表 (<?php echo count($friends); ?>)</span>
-                <button class="manage-btn" onclick="showManageFriendsModal()">管理好友</button>
-            </h2>
-            <div class="friend-list" id="friendList">
-                <?php if (empty($friends)): ?>
-                    <div class="empty-tip">暂无好友</div>
-                <?php else: ?>
-                    <?php foreach ($friends as $f): ?>
-                        <div class="friend-item" data-id="<?php echo htmlspecialchars($f['id']); ?>" onclick="showFriendInfo('<?php echo htmlspecialchars($f['id']); ?>')">
-                            <?php
-                            $fAvatar = !empty($f['avatar']) ? '/' . htmlspecialchars($f['avatar']) : 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2240%22%20height%3D%2240%22%20viewBox%3D%220%200%2040%2040%22%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%2220%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E';
-                            ?>
-                            <img class="friend-avatar" src="<?php echo $fAvatar; ?>" alt="avatar">
-                            <div class="friend-info">
-                                <span class="friend-name"><?php echo htmlspecialchars($f['nickname']); ?></span>
-                                <span class="friend-id">ID: <?php echo htmlspecialchars($f['id']); ?></span>
-                            </div>
-                            <?php if (!empty($f['vip'])): ?>
-                                <span class="vip-badge" style="margin-left: auto;">VIP</span>
-                            <?php endif; ?>
-                        </div>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </div>
-        </div>
-
-        <!-- 群组列表卡片 -->
-        <div class="card">
-            <h2>
-                <span>💬 群组列表 (<?php echo count($myGroups); ?>)</span>
-                <button class="manage-btn" onclick="showManageGroupsModal()">管理群组</button>
-            </h2>
-            <div class="group-list" id="groupList">
-                <?php if (empty($myGroups)): ?>
-                    <div class="empty-tip">暂无群组</div>
-                <?php else: ?>
-                    <?php foreach ($myGroups as $g): ?>
-                        <div class="group-item" data-id="<?php echo htmlspecialchars($g['id']); ?>">
-                            <div style="display: flex; align-items: center; flex:1; cursor:pointer;" onclick="showGroupInfo('<?php echo htmlspecialchars($g['id']); ?>')">
-                                <?php
-                                $gAvatar = !empty($g['avatar']) ? '/' . htmlspecialchars($g['avatar']) : 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2240%22%20height%3D%2240%22%20viewBox%3D%220%200%2040%2040%22%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%2220%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E';
-                                ?>
-                                <img class="group-avatar" src="<?php echo $gAvatar; ?>" alt="group avatar">
-                                <div class="group-info">
-                                    <span class="group-name"><?php echo htmlspecialchars($g['name']); ?>
-                                        <?php if ($g['creator'] == $userId): ?>
-                                            <span class="group-creator-tag">群主</span>
-                                        <?php endif; ?>
-                                    </span>
-                                    <span class="group-id">ID: <?php echo htmlspecialchars($g['id']); ?></span>
-                                </div>
-                            </div>
-                            <?php if ($g['creator'] == $userId): ?>
-                                <div class="group-manage-icon" title="管理成员" onclick="showGroupMembers('<?php echo htmlspecialchars($g['id']); ?>', '<?php echo htmlspecialchars($g['name']); ?>')">⚙️</div>
-                            <?php endif; ?>
-                        </div>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </div>
-        </div>
-    </div>
-
-    <!-- ========== 模态框 ========== -->
-
-    <!-- 管理好友弹窗 -->
-    <div class="modal" id="manageFriendsModal">
-        <div class="modal-content">
-            <h3>
-                管理好友
-                <span class="close" onclick="closeModal('manageFriendsModal')">&times;</span>
-            </h3>
-            <div id="manageFriendsList" style="max-height: 400px; overflow-y: auto;"></div>
-        </div>
-    </div>
-
-    <!-- 好友基本信息弹窗 -->
-    <div class="modal" id="friendInfoModal">
-        <div class="modal-content">
-            <h3>
-                好友信息
-                <span class="close" onclick="closeModal('friendInfoModal')">&times;</span>
-            </h3>
-            <div id="friendInfoContent"></div>
-        </div>
-    </div>
-
-    <!-- 管理群组弹窗（退出群组） -->
-    <div class="modal" id="manageGroupsModal">
-        <div class="modal-content">
-            <h3>
-                管理群组
-                <span class="close" onclick="closeModal('manageGroupsModal')">&times;</span>
-            </h3>
-            <div id="manageGroupsList" style="max-height: 400px; overflow-y: auto;"></div>
-        </div>
-    </div>
-
-    <!-- 群组基本信息弹窗 -->
-    <div class="modal" id="groupInfoModal">
-        <div class="modal-content">
-            <h3>
-                群组信息
-                <span class="close" onclick="closeModal('groupInfoModal')">&times;</span>
-            </h3>
-            <div id="groupInfoContent"></div>
-        </div>
-    </div>
-
-    <!-- 群成员管理弹窗 -->
-    <div class="modal" id="groupMembersModal">
-        <div class="modal-content">
-            <h3>
-                群成员管理 - <span id="groupNameSpan"></span>
-                <span class="close" onclick="closeModal('groupMembersModal')">&times;</span>
-            </h3>
-            <div id="groupMembersList" style="max-height: 400px; overflow-y: auto;"></div>
-        </div>
-    </div>
-
-<!-- 注销账号模态框 -->
-<div class="modal" id="deleteAccountModal">
+<!-- 物品详情模态框 -->
+<div class="modal" id="itemDetailModal">
     <div class="modal-content">
-        <h3>
-            注销账号
-            <span class="close" onclick="closeModal('deleteAccountModal')">&times;</span>
-        </h3>
-        <p style="color: #f56c6c; margin-bottom: 15px;">警告：注销账号将永久删除所有数据，包括好友、群组、聊天记录等，且无法恢复！</p>
-        <input type="password" id="deletePassword" placeholder="请输入您的密码">
-        <input type="text" id="deleteConfirm" placeholder="输入 'yes' 以确认">
-        <div style="text-align: right; margin-top: 20px;">
-            <button class="danger" onclick="deleteAccount()">确认注销</button>
-            <button class="secondary" onclick="closeModal('deleteAccountModal')">取消</button>
-        </div>
+        <span class="close" onclick="document.getElementById('itemDetailModal').style.display='none'">&times;</span>
+        <h3 style="margin-bottom:15px;">📦 物品详情</h3>
+        <div id="itemDetailContent" class="item-detail-content"></div>
     </div>
 </div>
 
-    <script>
-        // 当前用户ID和CSRF令牌
-        const CURRENT_USER_ID = '<?php echo $userId; ?>';
-        const CSRF_TOKEN = '<?php echo $csrf_token; ?>';
+<script>
+    const CSRF_TOKEN = '<?php echo $csrfToken; ?>';
+</script>
 
-        // 关闭模态框通用函数
-        function closeModal(id) {
-            document.getElementById(id).style.display = 'none';
-        }
+<script>
+    (function() {
+        const COLS = 9;
+        const ROWS = 32;
 
-        // 显示模态框
-        function showModal(id) {
-            document.getElementById(id).style.display = 'flex';
-        }
+        let items = [];                  // 每个物品包含 uid, itemid, x, y, w, h, color, img, name, details, origW, origH, canRotate
+        let grid = Array.from({ length: ROWS }, () => Array(COLS).fill(null));   // 存储物品的 uid
 
-        // ---------- 好友管理 ----------
-        function showManageFriendsModal() {
-            fetch('/index.php?action=getFriends')
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        const container = document.getElementById('manageFriendsList');
-                        container.innerHTML = '';
-                        if (data.friends.length === 0) {
-                            container.innerHTML = '<div class="empty-tip">暂无好友</div>';
-                        } else {
-                            data.friends.forEach(f => {
-                                const div = document.createElement('div');
-                                div.className = 'friend-item';
-                                div.style.cursor = 'default';
-                                div.innerHTML = `
-                                    <img class="friend-avatar" src="${f.avatar ? '/' + f.avatar : 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2240%22%20height%3D%2240%22%20viewBox%3D%220%200%2040%2040%22%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%2220%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E'}" alt="avatar">
-                                    <div class="friend-info">
-                                        <span class="friend-name">${escapeHtml(f.nickname || f.username)}</span>
-                                        <span class="friend-id">ID: ${escapeHtml(f.id)}</span>
-                                    </div>
-                                    <button class="friend-delete-btn" onclick="deleteFriend('${escapeHtml(f.id)}')">🗑️</button>
-                                `;
-                                container.appendChild(div);
-                            });
-                        }
-                        showModal('manageFriendsModal');
-                    } else {
-                        alert('获取好友列表失败：' + data.error);
-                    }
-                });
-        }
+        // 图片缓存
+        const imageCache = new Map();
 
-        function deleteFriend(friendId) {
-            if (!confirm('确定要删除该好友吗？聊天记录也将被清除。')) return;
-            const formData = new URLSearchParams();
-            formData.append('friendId', friendId);
-            formData.append('_csrf', CSRF_TOKEN);
-            fetch('/index.php?action=deleteFriend', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: formData
-            })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        alert('好友已删除');
-                        closeModal('manageFriendsModal');
-                        location.reload(); // 刷新页面以更新列表
-                    } else {
-                        alert('删除失败：' + (data.error || '未知错误'));
-                    }
-                });
-        }
+        // 拖拽状态
+        let dragging = false;
+        let dragItem = null;              // 当前拖拽的物品对象（包含 uid）
+        let dragItemOriginal = { x:0, y:0, w:0, h:0 };
+        let dragOffset = { x:0, y:0 };
+        let preview = { x:0, y:0, w:0, h:0 };
+        let validPreview = false;
+        let possibleSwap = false;
+        let isReversed = false;
+        let hasMoved = false;
 
-        // 显示好友基本信息
-        function showFriendInfo(friendId) {
-            fetch('/index.php?action=searchUserInfo&userId=' + encodeURIComponent(friendId))
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        const user = data.user;
-                        const registered = new Date(user.registered * 1000).toLocaleString();
-                        const content = `
-                            <div class="info-item"><span class="label">ID</span><span class="value">${escapeHtml(user.id)}</span></div>
-                            <div class="info-item"><span class="label">用户名</span><span class="value">${escapeHtml(user.username)}</span></div>
-                            <div class="info-item"><span class="label">昵称</span><span class="value">${escapeHtml(user.nickname)}</span></div>
-                            <div class="info-item"><span class="label">简介</span><span class="value">${escapeHtml(user.bio || '无')}</span></div>
-                            <div class="info-item"><span class="label">注册时间</span><span class="value">${escapeHtml(registered)}</span></div>
-                        `;
-                        document.getElementById('friendInfoContent').innerHTML = content;
-                        showModal('friendInfoModal');
-                    } else {
-                        alert('获取信息失败：' + data.error);
-                    }
-                });
-        }
+        const canvas = document.getElementById('warehouseCanvas');
+        const ctx = canvas.getContext('2d');
 
-        // ---------- 群组管理 ----------
-        function showManageGroupsModal() {
-            fetch('/index.php?action=getGroupList')
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        const container = document.getElementById('manageGroupsList');
-                        container.innerHTML = '';
-                        if (data.groups.length === 0) {
-                            container.innerHTML = '<div class="empty-tip">暂无群组</div>';
-                        } else {
-                            data.groups.forEach(g => {
-                                const div = document.createElement('div');
-                                div.className = 'group-item';
-                                div.style.cursor = 'default';
-                                div.innerHTML = `
-                                    <img class="group-avatar" src="${g.avatar ? '/' + g.avatar : 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2240%22%20height%3D%2240%22%20viewBox%3D%220%200%2040%2040%22%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%2220%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E'}" alt="avatar">
-                                    <div class="group-info" style="flex:1;">
-                                        <span class="group-name">${escapeHtml(g.name)}</span>
-                                        <span class="group-id">ID: ${escapeHtml(g.id)}</span>
-                                    </div>
-                                    <button class="friend-delete-btn" onclick="leaveGroup('${escapeHtml(g.id)}', '${escapeHtml(g.name)}')">🚪</button>
-                                `;
-                                container.appendChild(div);
-                            });
-                        }
-                        showModal('manageGroupsModal');
-                    } else {
-                        alert('获取群组列表失败：' + data.error);
-                    }
-                });
-        }
-
-        function leaveGroup(groupId, groupName) {
-            if (!confirm(`确定要退出群组 “${groupName}” 吗？`)) return;
-            const formData = new URLSearchParams();
-            formData.append('groupId', groupId);
-            formData.append('_csrf', CSRF_TOKEN);
-            fetch('/index.php?action=leaveGroup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: formData
-            })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        alert('已退出群组');
-                        closeModal('manageGroupsModal');
-                        location.reload();
-                    } else {
-                        alert('退出失败：' + (data.error || '未知错误'));
-                    }
-                });
-        }
-
-        // 显示群组基本信息
-        function showGroupInfo(groupId) {
-            fetch('/index.php?action=getGroupInfo&groupId=' + encodeURIComponent(groupId))
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        const g = data.group;
-                        const created = new Date(g.created * 1000).toLocaleString();
-                        const content = `
-                            <div class="info-item"><span class="label">群ID</span><span class="value">${escapeHtml(g.id)}</span></div>
-                            <div class="info-item"><span class="label">群名称</span><span class="value">${escapeHtml(g.name)}</span></div>
-                            <div class="info-item"><span class="label">群主</span><span class="value">${escapeHtml(g.creator)}</span></div>
-                            <div class="info-item"><span class="label">创建时间</span><span class="value">${escapeHtml(created)}</span></div>
-                            <div class="info-item"><span class="label">成员数</span><span class="value">${g.members.length}</span></div>
-                        `;
-                        document.getElementById('groupInfoContent').innerHTML = content;
-                        showModal('groupInfoModal');
-                    } else {
-                        alert('获取群组信息失败：' + data.error);
-                    }
-                });
-        }
-
-        // 显示群成员管理弹窗（仅群主）
-        function showGroupMembers(groupId, groupName) {
-            document.getElementById('groupNameSpan').textContent = groupName;
-            fetch('/index.php?action=getGroupInfo&groupId=' + encodeURIComponent(groupId))
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        const group = data.group;
-                        const members = group.members;
-                        // 获取所有成员详细信息
-                        Promise.all(members.map(mid => 
-                            fetch('/index.php?action=searchUserInfo&userId=' + encodeURIComponent(mid))
-                                .then(res => res.json())
-                                .then(data => data.success ? data.user : null)
-                        )).then(users => {
-                            const container = document.getElementById('groupMembersList');
-                            container.innerHTML = '';
-                            users.forEach(u => {
-                                if (!u) return;
-                                const div = document.createElement('div');
-                                div.className = 'member-item';
-                                const avatarUrl = u.avatar ? '/' + u.avatar : 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2240%22%20height%3D%2240%22%20viewBox%3D%220%200%2040%2040%22%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%2220%22%20fill%3D%22%23ccc%22%2F%3E%3C%2Fsvg%3E';
-                                div.innerHTML = `
-                                    <img class="member-avatar" src="${avatarUrl}" alt="avatar">
-                                    <div class="member-info">
-                                        <span class="member-name">${escapeHtml(u.nickname || u.username)}</span>
-                                        <span class="member-id">ID: ${escapeHtml(u.id)}</span>
-                                    </div>
-                                    ${u.id !== CURRENT_USER_ID ? `<button class="kick-btn" onclick="kickMember('${escapeHtml(groupId)}', '${escapeHtml(u.id)}', '${escapeHtml(u.nickname || u.username)}')">踢出</button>` : ''}
-                                `;
-                                container.appendChild(div);
-                            });
-                            showModal('groupMembersModal');
-                        });
-                    } else {
-                        alert('获取群组信息失败：' + data.error);
-                    }
-                });
-        }
-
-        function kickMember(groupId, memberId, memberName) {
-            if (!confirm(`确定要将 ${memberName} 踢出群组吗？`)) return;
-            const formData = new URLSearchParams();
-            formData.append('groupId', groupId);
-            formData.append('memberId', memberId);
-            formData.append('_csrf', CSRF_TOKEN);
-            fetch('/index.php?action=removeGroupMember', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: formData
-            })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        alert('已踢出');
-                        closeModal('groupMembersModal');
-                        // 刷新群组列表（可选）
-                    } else {
-                        alert('踢出失败：' + (data.error || '未知错误'));
-                    }
-                });
-        }
-
-        // HTML 转义
-        function escapeHtml(unsafe) {
-            if (!unsafe) return '';
-            return unsafe
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
-        }
-
-        // 暗黑模式切换
-        (function() {
-            const darkModeToggle = document.getElementById('darkModeToggle');
-            const prefersDark = localStorage.getItem('darkMode') === 'true';
-            if (prefersDark) {
-                document.documentElement.classList.add('dark-mode');
+        // ---------- 网格操作（基于 uid）----------
+        function buildGridFromItems() {
+            // 清空 grid
+            for (let y = 0; y < ROWS; y++) {
+                for (let x = 0; x < COLS; x++) {
+                    grid[y][x] = null;
+                }
             }
-            darkModeToggle.addEventListener('click', () => {
-                document.documentElement.classList.toggle('dark-mode');
-                const isDark = document.documentElement.classList.contains('dark-mode');
-                localStorage.setItem('darkMode', isDark);
+            // 填充每个物品
+            items.forEach(item => {
+                for (let dy = 0; dy < item.h; dy++) {
+                    for (let dx = 0; dx < item.w; dx++) {
+                        const ny = item.y + dy;
+                        const nx = item.x + dx;
+                        if (ny < ROWS && nx < COLS) grid[ny][nx] = item.uid;
+                    }
+                }
             });
-        })();
-
-// 显示注销账号模态框
-function showDeleteAccountModal() {
-    document.getElementById('deletePassword').value = '';
-    document.getElementById('deleteConfirm').value = '';
-    showModal('deleteAccountModal');
-}
-
-// 执行注销请求
-function deleteAccount() {
-    const password = document.getElementById('deletePassword').value.trim();
-    const confirmYes = document.getElementById('deleteConfirm').value.trim();
-    if (!password) {
-        alert('请输入密码');
-        return;
-    }
-    if (confirmYes !== 'yes') {
-        alert('请输入 "yes" 以确认注销');
-        return;
-    }
-    const formData = new URLSearchParams();
-    formData.append('password', password);
-    formData.append('confirm_yes', confirmYes);
-    formData.append('_csrf', CSRF_TOKEN);
-    fetch('/index.php?action=deleteAccount', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: formData
-    })
-    .then(res => res.json())
-    .then(data => {
-        if (data.success) {
-            alert('账号已注销，即将返回首页');
-            window.location.href = '/index.php';
-        } else {
-            alert('注销失败：' + (data.error || '未知错误'));
         }
-    })
-    .catch(err => {
-        alert('请求失败：' + err);
-    });
-}
 
-    </script>
+        function clearItemFromGrid(uid) {
+            for (let y = 0; y < ROWS; y++) {
+                for (let x = 0; x < COLS; x++) {
+                    if (grid[y][x] === uid) grid[y][x] = null;
+                }
+            }
+        }
+
+        function fillItemToGrid(item) {
+            for (let dy = 0; dy < item.h; dy++) {
+                for (let dx = 0; dx < item.w; dx++) {
+                    const ny = item.y + dy;
+                    const nx = item.x + dx;
+                    if (ny < ROWS && nx < COLS) grid[ny][nx] = item.uid;
+                }
+            }
+        }
+
+        // ---------- 碰撞检测（使用 uid）----------
+        function canPlaceExcluding(posX, posY, w, h, excludeUidSet) {
+            if (posX < 0 || posY < 0 || posX + w > COLS || posY + h > ROWS) return false;
+            for (let dy = 0; dy < h; dy++) {
+                for (let dx = 0; dx < w; dx++) {
+                    const cellUid = grid[posY + dy][posX + dx];
+                    if (cellUid !== null && !excludeUidSet.has(cellUid)) return false;
+                }
+            }
+            return true;
+        }
+
+        function canPlace(item, posX, posY, w, h) {
+            return canPlaceExcluding(posX, posY, w, h, new Set([item.uid]));
+        }
+
+        function isItemOverlappingAny(item) {
+            for (let other of items) {
+                if (other.uid === item.uid) continue;
+                if (!(item.x + item.w <= other.x || item.x >= other.x + other.w ||
+                      item.y + item.h <= other.y || item.y >= other.y + other.h)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function findFirstEmptySpot(item) {
+            for (let y = 0; y <= ROWS - item.h; y++) {
+                for (let x = 0; x <= COLS - item.w; x++) {
+                    if (canPlaceExcluding(x, y, item.w, item.h, new Set([item.uid]))) {
+                        return { x, y };
+                    }
+                }
+            }
+            return null;
+        }
+
+        function resolveOverlapsForItems(targetItems, fixedUid) {
+            const MAX_ITER = 20;
+            let moved = true;
+            let iter = 0;
+            while (moved && iter < MAX_ITER) {
+                moved = false;
+                for (let item of targetItems) {
+                    if (item.uid === fixedUid) continue;
+                    if (isItemOverlappingAny(item)) {
+                        const pos = findFirstEmptySpot(item);
+                        if (pos) {
+                            clearItemFromGrid(item.uid);
+                            item.x = pos.x;
+                            item.y = pos.y;
+                            fillItemToGrid(item);
+                            moved = true;
+                        }
+                    }
+                }
+                iter++;
+            }
+        }
+
+        // ---------- 交换检测（基于 uid）----------
+        function checkPossibleSwap() {
+            if (!dragItem) return false;
+            const itemsInRect = [];
+            for (let item of items) {
+                if (item.uid === dragItem.uid) continue;
+                if (item.x >= preview.x && item.y >= preview.y && 
+                    item.x + item.w <= preview.x + preview.w && 
+                    item.y + item.h <= preview.y + preview.h) {
+                    itemsInRect.push(item);
+                }
+            }
+            if (itemsInRect.length === 0) return false;
+
+            if (itemsInRect.length === 1) {
+                const other = itemsInRect[0];
+                const newDragX = preview.x;
+                const newDragY = preview.y;
+                const newDragW = isReversed ? dragItem.h : dragItem.w;
+                const newDragH = isReversed ? dragItem.w : dragItem.h;
+                const newOtherX = dragItemOriginal.x;
+                const newOtherY = dragItemOriginal.y;
+                const newOtherW = other.w;
+                const newOtherH = other.h;
+
+                if (newDragX < 0 || newDragY < 0 || newDragX + newDragW > COLS || newDragY + newDragH > ROWS) return false;
+                if (newOtherX < 0 || newOtherY < 0 || newOtherX + newOtherW > COLS || newOtherY + newOtherH > ROWS) return false;
+                if (!(newDragX + newDragW <= newOtherX || newDragX >= newOtherX + newOtherW ||
+                      newDragY + newDragH <= newOtherY || newDragY >= newOtherY + newOtherH)) {
+                    return false;
+                }
+
+                const movingUids = new Set([dragItem.uid, other.uid]);
+                if (!canPlaceExcluding(newDragX, newDragY, newDragW, newDragH, movingUids)) return false;
+                if (!canPlaceExcluding(newOtherX, newOtherY, newOtherW, newOtherH, movingUids)) return false;
+                return true;
+            }
+
+            // 多物品整体平移
+            let minX = Infinity, minY = Infinity;
+            for (let item of itemsInRect) {
+                minX = Math.min(minX, item.x);
+                minY = Math.min(minY, item.y);
+            }
+            const deltaX = dragItemOriginal.x - minX;
+            const deltaY = dragItemOriginal.y - minY;
+            const movingUids = new Set(itemsInRect.map(i => i.uid));
+            movingUids.add(dragItem.uid);
+
+            for (let item of itemsInRect) {
+                const newX = item.x + deltaX;
+                const newY = item.y + deltaY;
+                if (newX < dragItemOriginal.x || newY < dragItemOriginal.y ||
+                    newX + item.w > dragItemOriginal.x + dragItemOriginal.w ||
+                    newY + item.h > dragItemOriginal.y + dragItemOriginal.h) {
+                    return false;
+                }
+                if (!canPlaceExcluding(newX, newY, item.w, item.h, movingUids)) {
+                    return false;
+                }
+            }
+
+            const newDragX = preview.x;
+            const newDragY = preview.y;
+            const newDragW = isReversed ? dragItem.h : dragItem.w;
+            const newDragH = isReversed ? dragItem.w : dragItem.h;
+            if (!canPlaceExcluding(newDragX, newDragY, newDragW, newDragH, movingUids)) {
+                return false;
+            }
+            return true;
+        }
+
+        function performOneToOneSwap(other) {
+            const newDragX = preview.x;
+            const newDragY = preview.y;
+            const newDragW = isReversed ? dragItem.h : dragItem.w;
+            const newDragH = isReversed ? dragItem.w : dragItem.h;
+            const newOtherX = dragItemOriginal.x;
+            const newOtherY = dragItemOriginal.y;
+
+            clearItemFromGrid(dragItem.uid);
+            clearItemFromGrid(other.uid);
+
+            dragItem.x = newDragX;
+            dragItem.y = newDragY;
+            dragItem.w = newDragW;
+            dragItem.h = newDragH;
+            other.x = newOtherX;
+            other.y = newOtherY;
+
+            fillItemToGrid(dragItem);
+            fillItemToGrid(other);
+
+            resolveOverlapsForItems([dragItem, other], dragItem.uid);
+        }
+
+        function performMultiSwap(itemsInRect) {
+            let minX = Infinity, minY = Infinity;
+            for (let item of itemsInRect) {
+                minX = Math.min(minX, item.x);
+                minY = Math.min(minY, item.y);
+            }
+            const deltaX = dragItemOriginal.x - minX;
+            const deltaY = dragItemOriginal.y - minY;
+            const movingUids = new Set(itemsInRect.map(i => i.uid));
+            movingUids.add(dragItem.uid);
+
+            for (let item of itemsInRect) {
+                clearItemFromGrid(item.uid);
+            }
+            clearItemFromGrid(dragItem.uid);
+
+            dragItem.x = preview.x;
+            dragItem.y = preview.y;
+            if (isReversed) {
+                [dragItem.w, dragItem.h] = [dragItem.h, dragItem.w];
+            }
+            fillItemToGrid(dragItem);
+
+            for (let item of itemsInRect) {
+                item.x += deltaX;
+                item.y += deltaY;
+                fillItemToGrid(item);
+            }
+
+            resolveOverlapsForItems([dragItem, ...itemsInRect], dragItem.uid);
+        }
+
+        // ---------- 贴合与旋转决策 ----------
+        function getContactInfo(rectX, rectY, rectW, rectH, other) {
+            if (rectY + rectH === other.y && rectX < other.x + other.w && rectX + rectW > other.x) {
+                return { dir: 'bottom', targetLen: other.w };
+            }
+            if (rectY === other.y + other.h && rectX < other.x + other.w && rectX + rectW > other.x) {
+                return { dir: 'top', targetLen: other.w };
+            }
+            if (rectX + rectW === other.x && rectY < other.y + other.h && rectY + rectH > other.y) {
+                return { dir: 'right', targetLen: other.h };
+            }
+            if (rectX === other.x + other.w && rectY < other.y + other.h && rectY + rectH > other.y) {
+                return { dir: 'left', targetLen: other.h };
+            }
+            return null;
+        }
+
+        function isAdjacentToAny(rectX, rectY, rectW, rectH, excludeUid) {
+            for (let item of items) {
+                if (item.uid === excludeUid) continue;
+                if (getContactInfo(rectX, rectY, rectW, rectH, item)) return true;
+            }
+            return false;
+        }
+
+        function checkMaxEdgeFit(baseX, baseY, baseW, baseH, revX, revY, revW, revH, excludeUid) {
+            for (let item of items) {
+                if (item.uid === excludeUid) continue;
+
+                const baseContact = getContactInfo(baseX, baseY, baseW, baseH, item);
+                if (baseContact) {
+                    const movingEdgeLen = (baseContact.dir === 'top' || baseContact.dir === 'bottom') ? baseW : baseH;
+                    const movingLong = Math.max(baseW, baseH);
+                    if (baseContact.targetLen <= movingEdgeLen) {
+                        if (movingEdgeLen === movingLong) {
+                            return false;
+                        } else {
+                            const revContact = getContactInfo(revX, revY, revW, revH, item);
+                            if (revContact) {
+                                const revEdgeLen = (revContact.dir === 'top' || revContact.dir === 'bottom') ? revW : revH;
+                                if (revContact.targetLen <= revEdgeLen && revEdgeLen === Math.max(revW, revH)) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                const revContact = getContactInfo(revX, revY, revW, revH, item);
+                if (revContact) {
+                    const movingEdgeLen = (revContact.dir === 'top' || revContact.dir === 'bottom') ? revW : revH;
+                    const movingLong = Math.max(revW, revH);
+                    if (revContact.targetLen <= movingEdgeLen) {
+                        if (movingEdgeLen === movingLong) {
+                            return true;
+                        } else {
+                            const baseContact2 = getContactInfo(baseX, baseY, baseW, baseH, item);
+                            if (baseContact2) {
+                                const baseEdgeLen = (baseContact2.dir === 'top' || baseContact2.dir === 'bottom') ? baseW : baseH;
+                                if (baseContact2.targetLen <= baseEdgeLen && baseEdgeLen === Math.max(baseW, baseH)) {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        // ---------- 绘制（带图片，拉伸填充）----------
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const cellW = canvas.width / COLS;
+            const cellH = canvas.height / ROWS;
+
+            // 网格线
+            ctx.strokeStyle = '#3d5f6b';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= COLS; i++) {
+                ctx.beginPath(); ctx.moveTo(i*cellW, 0); ctx.lineTo(i*cellW, canvas.height); ctx.stroke();
+            }
+            for (let i = 0; i <= ROWS; i++) {
+                ctx.beginPath(); ctx.moveTo(0, i*cellH); ctx.lineTo(canvas.width, i*cellH); ctx.stroke();
+            }
+
+            // 绘制所有物品（除拖拽中的）
+            items.forEach(item => {
+                if (dragging && dragItem && dragItem.uid === item.uid) return;
+                drawItem(item, cellW, cellH);
+            });
+
+            // 绘制预览
+            if (dragging && dragItem) {
+                drawPreview(cellW, cellH);
+            }
+        }
+
+        function drawItem(item, cellW, cellH) {
+            const x = item.x * cellW;
+            const y = item.y * cellH;
+            const w = item.w * cellW;
+            const h = item.h * cellH;
+
+            // 背景色
+            ctx.fillStyle = item.color;
+            ctx.shadowColor = 'rgba(0,0,0,0.5)';
+            ctx.shadowBlur = 4;
+            ctx.fillRect(x, y, w, h);
+            ctx.shadowBlur = 0;
+
+            // 边框
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x, y, w, h);
+
+            // 绘制图片（如果已缓存）
+            if (item.img && imageCache.has(item.img)) {
+                const img = imageCache.get(item.img);
+                if (img.complete && img.naturalWidth > 0) {
+                    drawImageInRect(img, x, y, w, h, item);
+                }
+            } else {
+                // 没有图片或未加载，显示文字尺寸
+                ctx.fillStyle = '#f0f6f7';
+                const fontSize = Math.max(12, Math.floor(cellH * 0.4));
+                ctx.font = `bold ${fontSize}px "Segoe UI", monospace`;
+                ctx.shadowColor = '#000';
+                ctx.shadowBlur = 6;
+                ctx.fillText(`${item.w}x${item.h}`, x + 4, y + fontSize + 2);
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        function drawPreview(cellW, cellH) {
+            const x = preview.x * cellW;
+            const y = preview.y * cellH;
+            const w = preview.w * cellW;
+            const h = preview.h * cellH;
+
+            ctx.globalAlpha = 0.7;
+            ctx.fillStyle = dragItem.color;
+            ctx.fillRect(x, y, w, h);
+            ctx.globalAlpha = 1.0;
+            ctx.strokeStyle = (validPreview || possibleSwap) ? '#a5d6a5' : '#f08080';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(x, y, w, h);
+
+            // 预览时也尝试显示图片（若已缓存）
+            if (dragItem.img && imageCache.has(dragItem.img)) {
+                const img = imageCache.get(dragItem.img);
+                if (img.complete && img.naturalWidth > 0) {
+                    drawImageInRect(img, x, y, w, h, dragItem);
+                }
+            } else {
+                ctx.fillStyle = '#fff';
+                const fontSize = Math.max(12, Math.floor(cellH * 0.4));
+                ctx.font = `bold ${fontSize}px "Segoe UI"`;
+                ctx.shadowColor = '#000';
+                ctx.shadowBlur = 5;
+                ctx.fillText(`${preview.w}x${preview.h}`, x + 5, y + fontSize + 4);
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        // 在指定矩形内绘制图片，拉伸填充，并根据物品方向自动旋转
+        function drawImageInRect(img, x, y, w, h, item) {
+            const pad = 2;
+            const availW = w - pad * 2;
+            const availH = h - pad * 2;
+            if (availW <= 0 || availH <= 0) return;
+
+            // 判断是否需要基于方向旋转（存储尺寸与原始尺寸互换）
+            const needRotate = (item.w !== item.h) && (item.w === item.origH && item.h === item.origW);
+            
+            // 判断是否需要二次旋转（除3x4和不可旋转物品外）
+            const needSecondRotate = !(item.w === 3 && item.h === 4) && item.canRotate;
+
+            // 基础旋转次数（每次90°）
+            let rotationCount = 0;
+            if (needRotate) rotationCount++;
+            if (needSecondRotate) rotationCount++;
+
+            // 额外无条件增加180°旋转，排除正方形物品（宽高相等）
+            if (item.w !== item.h) {
+                rotationCount += 2; // 加180°（2个90°）
+            }
+
+            // 特定物品旋转规则
+            const isVertical2x3 = (item.w === 2 && item.h === 3); // 竖向2x3
+            const isVertical1x2 = (item.w === 1 && item.h === 2); // 竖向1x2
+            const isVertical3x1 = (item.w === 3 && item.h === 1); // 竖向3x1
+            const isHorizontal3x1 = (item.w === 1 && item.h === 3); // 横向3x1
+            const isVertical3x4 = (item.w === 3 && item.h === 4); // 竖向3x4
+            const isHorizontal3x4 = (item.w === 4 && item.h === 3); // 横向3x4
+
+            // 竖向2x3、1x2旋转180度
+            if (isVertical2x3 || isVertical1x2) {
+                rotationCount += 2; // 180度
+            }
+            
+            // 竖向3x1左旋转90度
+            if (isVertical3x1) {
+                rotationCount += 3; // 左旋转90度 = 270度顺时针
+            }
+            
+            // 横向3x1右旋转90度
+            if (isHorizontal3x1) {
+                rotationCount += 1; // 右旋转90度
+            }
+
+            // 竖向3x4旋转180度
+            if (isVertical3x4) {
+                rotationCount += 2; // 180度
+            }
+
+            // 横向3x4右旋转90度
+            if (isHorizontal3x4) {
+                rotationCount += 1; // 右旋转90度
+            }
+
+            // 动力电池特殊处理（itemid="动力电池" 的横向3x4左旋转90度）
+            if (item.itemid === "动力电池" && isHorizontal3x4) {
+                rotationCount -= 0; // 从右旋转90度改为左旋转90度
+                rotationCount += 3; // 左旋转90度 = 270度顺时针
+            }
+
+            const rotationAngle = rotationCount * Math.PI / 2; // 总旋转角度
+
+            ctx.save();
+            ctx.translate(x + w / 2, y + h / 2);
+            ctx.rotate(rotationAngle);
+
+            // 若旋转奇数次，绘制区域宽高互换
+            if (rotationCount % 2 === 1) {
+                ctx.drawImage(img, -availH / 2, -availW / 2, availH, availW);
+            } else {
+                ctx.drawImage(img, -availW / 2, -availH / 2, availW, availH);
+            }
+
+            ctx.restore();
+        }
+
+        // ---------- 坐标转换 ----------
+        function getGridCoord(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const canvasX = (e.clientX - rect.left) * scaleX;
+            const canvasY = (e.clientY - rect.top) * scaleY;
+            const cellW = canvas.width / COLS;
+            const cellH = canvas.height / ROWS;
+            return {
+                x: Math.min(COLS-1, Math.max(0, Math.floor(canvasX / cellW))),
+                y: Math.min(ROWS-1, Math.max(0, Math.floor(canvasY / cellH)))
+            };
+        }
+
+        function getItemAt(gx, gy) {
+            const uid = grid[gy]?.[gx];
+            return items.find(item => item.uid === uid) || null;
+        }
+
+        // ---------- 事件处理 ----------
+        function handleMouseDown(e) {
+            e.preventDefault();
+            if (dragging) return;
+            const g = getGridCoord(e);
+            const item = getItemAt(g.x, g.y);
+            if (!item) return;
+
+            dragItem = item;
+            dragItemOriginal = { x: item.x, y: item.y, w: item.w, h: item.h };
+            dragOffset = { x: g.x - item.x, y: g.y - item.y };
+            isReversed = false;
+            preview = { x: item.x, y: item.y, w: item.w, h: item.h };
+            validPreview = true;
+            possibleSwap = false;
+            hasMoved = false;
+
+            clearItemFromGrid(dragItem.uid);
+            dragging = true;
+            canvas.classList.add('dragging');
+            draw();
+        }
+
+        function handleMouseMove(e) {
+            if (!dragging || !dragItem) return;
+            e.preventDefault();
+
+            const g = getGridCoord(e);
+            if (!hasMoved && (g.x !== dragItemOriginal.x + dragOffset.x || g.y !== dragItemOriginal.y + dragOffset.y)) {
+                hasMoved = true;
+            }
+
+            let baseX = g.x - dragOffset.x;
+            let baseY = g.y - dragOffset.y;
+            baseX = Math.max(0, Math.min(baseX, COLS - dragItem.w));
+            baseY = Math.max(0, Math.min(baseY, ROWS - dragItem.h));
+
+            let revX, revY, revW, revH;
+            if (dragItem.canRotate) {
+                revW = dragItem.h;
+                revH = dragItem.w;
+                let revOffsetX = dragOffset.y;
+                let revOffsetY = dragOffset.x;
+                revX = g.x - revOffsetX;
+                revY = g.y - revOffsetY;
+                revX = Math.max(0, Math.min(revX, COLS - revW));
+                revY = Math.max(0, Math.min(revY, ROWS - revH));
+            } else {
+                revX = baseX; revY = baseY; revW = dragItem.w; revH = dragItem.h;
+            }
+
+            let useRev = null;
+            if (dragItem.canRotate) {
+                useRev = checkMaxEdgeFit(baseX, baseY, dragItem.w, dragItem.h, revX, revY, revW, revH, dragItem.uid);
+            }
+
+            if (useRev !== null) {
+                isReversed = useRev;
+            } else {
+                if (dragItem.canRotate) {
+                    const revValid = canPlace(dragItem, revX, revY, revW, revH);
+                    const revAdjacent = revValid && isAdjacentToAny(revX, revY, revW, revH, dragItem.uid);
+                    const baseValid = canPlace(dragItem, baseX, baseY, dragItem.w, dragItem.h);
+                    const baseAdjacent = baseValid && isAdjacentToAny(baseX, baseY, dragItem.w, dragItem.h, dragItem.uid);
+
+                    if (revAdjacent) {
+                        isReversed = true;
+                    } else if (baseAdjacent) {
+                        isReversed = false;
+                    } else {
+                        isReversed = revValid && !baseValid ? true : false;
+                    }
+                } else {
+                    isReversed = false;
+                }
+            }
+
+            if (isReversed) {
+                preview.x = revX; preview.y = revY; preview.w = revW; preview.h = revH;
+            } else {
+                preview.x = baseX; preview.y = baseY; preview.w = dragItem.w; preview.h = dragItem.h;
+            }
+
+            validPreview = canPlace(dragItem, preview.x, preview.y, preview.w, preview.h);
+
+            if (!validPreview && dragItem.canRotate) {
+                if (isReversed) {
+                    if (canPlace(dragItem, baseX, baseY, dragItem.w, dragItem.h)) {
+                        isReversed = false;
+                        preview.x = baseX; preview.y = baseY; preview.w = dragItem.w; preview.h = dragItem.h;
+                        validPreview = true;
+                    }
+                } else {
+                    if (canPlace(dragItem, revX, revY, revW, revH)) {
+                        isReversed = true;
+                        preview.x = revX; preview.y = revY; preview.w = revW; preview.h = revH;
+                        validPreview = true;
+                    }
+                }
+            }
+
+            if (!validPreview) {
+                possibleSwap = checkPossibleSwap();
+            } else {
+                possibleSwap = false;
+            }
+
+            draw();
+        }
+
+        function handleMouseUp(e) {
+            if (!dragging || !dragItem) {
+                canvas.classList.remove('dragging');
+                return;
+            }
+            e.preventDefault();
+
+            let swapped = false;
+
+            if (validPreview) {
+                dragItem.x = preview.x;
+                dragItem.y = preview.y;
+                if (isReversed) {
+                    [dragItem.w, dragItem.h] = [dragItem.h, dragItem.w];
+                }
+                fillItemToGrid(dragItem);
+                swapped = true;
+            } else if (possibleSwap) {
+                const itemsInRect = [];
+                for (let item of items) {
+                    if (item.uid === dragItem.uid) continue;
+                    if (item.x >= preview.x && item.y >= preview.y && 
+                        item.x + item.w <= preview.x + preview.w && 
+                        item.y + item.h <= preview.y + preview.h) {
+                        itemsInRect.push(item);
+                    }
+                }
+                if (itemsInRect.length === 1) {
+                    performOneToOneSwap(itemsInRect[0]);
+                    swapped = true;
+                } else if (itemsInRect.length > 1) {
+                    performMultiSwap(itemsInRect);
+                    swapped = true;
+                }
+            }
+
+            if (!swapped) {
+                dragItem.x = dragItemOriginal.x;
+                dragItem.y = dragItemOriginal.y;
+                fillItemToGrid(dragItem);
+            }
+
+            saveItems(); // 自动保存
+
+            dragging = false;
+            dragItem = null;
+            canvas.classList.remove('dragging');
+            draw();
+        }
+
+        function handleClick(e) {
+            if (hasMoved) {
+                hasMoved = false;
+                return;
+            }
+            const g = getGridCoord(e);
+            const item = getItemAt(g.x, g.y);
+            if (item) {
+                const content = document.getElementById('itemDetailContent');
+                content.innerHTML = `
+                    <p><span class="color-sample" style="background:${item.color};"></span> <strong>名称:</strong> ${item.name || '未知'}</p>
+                    <p><strong>尺寸:</strong> ${item.w} x ${item.h}</p>
+                    <p><strong>位置:</strong> (${item.x}, ${item.y})</p>
+                    <p><strong>详情:</strong> ${item.details || '无'}</p>
+                `;
+                document.getElementById('itemDetailModal').style.display = 'flex';
+            }
+        }
+
+        // ---------- 数据加载与保存 ----------
+        async function loadWarehouse() {
+            try {
+                const res = await fetch('?action=getWarehouse');
+                const data = await res.json();
+                if (data.success) {
+                    // 为每个物品生成唯一 uid
+                    items = (data.warehouse || []).map(item => ({
+                        ...item,
+                        uid: 'item_' + Math.random().toString(36).substr(2, 9)
+                    }));
+                    buildGridFromItems();
+                    // 预加载所有图片
+                    await preloadImages(items);
+                    updateColorLegend();
+                    resizeAndDraw();
+                }
+            } catch (e) { console.error('加载失败', e); }
+        }
+
+        async function preloadImages(items) {
+            const promises = [];
+            for (let item of items) {
+                if (item.img && !imageCache.has(item.img)) {
+                    const img = new Image();
+                    img.src = item.img;
+                    imageCache.set(item.img, img);
+                    promises.push(new Promise((resolve) => {
+                        img.onload = () => { 
+                            draw(); // 图片加载后重绘
+                            resolve(); 
+                        };
+                        img.onerror = () => {
+                            console.warn('图片加载失败:', item.img);
+                            resolve(); // 即使失败也继续
+                        };
+                    }));
+                }
+            }
+            await Promise.all(promises);
+        }
+
+        async function saveItems() {
+            try {
+                // 去除 uid 后再发送
+                const itemsToSave = items.map(({ uid, ...rest }) => rest);
+                await fetch('?action=saveWarehouse', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ items: itemsToSave, _csrf: CSRF_TOKEN })
+                });
+            } catch (e) { console.error('保存失败', e); }
+        }
+
+        function updateColorLegend() {
+            const legendDiv = document.getElementById('colorLegend');
+            const uniqueNames = [...new Set(items.map(i => i.name))];
+            legendDiv.innerHTML = uniqueNames.map(name => {
+                const item = items.find(i => i.name === name);
+                return `<div class="badge"><span class="color-sample" style="background:${item.color};"></span> ${name}</div>`;
+            }).join('');
+        }
+
+        // ---------- 自适应画布 ----------
+        function resizeAndDraw() {
+            const rect = canvas.getBoundingClientRect();
+            if (rect.width <= 0) return;
+            const physicalWidth = Math.floor(rect.width);
+            const physicalHeight = Math.floor(physicalWidth / COLS * ROWS);
+            canvas.width = physicalWidth;
+            canvas.height = physicalHeight;
+            draw();
+        }
+
+        // ---------- 重新加载 ----------
+        function reloadFromServer() {
+            loadWarehouse();
+        }
+
+        // ---------- 初始化 ----------
+        const resizeObserver = new ResizeObserver(resizeAndDraw);
+        resizeObserver.observe(canvas);
+
+        canvas.addEventListener('mousedown', handleMouseDown);
+        canvas.addEventListener('click', handleClick);
+        canvas.addEventListener('dragstart', (e) => e.preventDefault());
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+
+        document.getElementById('reloadBtn').addEventListener('click', reloadFromServer);
+
+        window.onclick = function(e) {
+            const modal = document.getElementById('itemDetailModal');
+            if (e.target === modal) modal.style.display = 'none';
+        };
+
+        loadWarehouse();
+    })();
+</script>
 </body>
 </html>
