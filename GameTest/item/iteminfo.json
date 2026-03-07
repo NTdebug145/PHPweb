@@ -1,0 +1,72 @@
+[
+    {
+        "itemid": "量子存储",
+        "block": "1x1",
+        "img": "Icon_1.png",
+        "level": 1,
+        "info": "这是一个基础1x1物品，适用于新手教程"
+    },
+    {
+        "itemid": "碳纤维板",
+        "block": "3x3",
+        "img": "Icon_2.png",
+        "level": 6,
+        "info": "这是一个基础3x3物品，适用于新手教程"
+    },
+    {
+        "itemid": "纵横",
+        "block": "3x3",
+        "img": "Icon_3.png",
+        "level": 6,
+        "info": "这是一个基础3x3物品，适用于新手教程"
+    },
+    {
+        "itemid": "火箭燃料",
+        "block": "3x4",
+        "img": "Icon_4.png",
+        "level": 6,
+        "info": "这是一个基础3x4物品，适用于新手教程"
+    },
+    {
+        "itemid": "化石",
+        "block": "1x2",
+        "img": "Icon_5.png",
+        "level": 6,
+        "info": "这是一个基础1x2物品，适用于新手教程"
+    },
+    {
+        "itemid": "显卡",
+        "block": "1x2",
+        "img": "Icon_6.png",
+        "level": 6,
+        "info": "这是一个基础1x2物品，适用于新手教程"
+    },
+    {
+        "itemid": "笔记本电脑",
+        "block": "2x3",
+        "img": "Icon_7.png",
+        "level": 6,
+        "info": "这是一个基础1x2物品，适用于新手教程"
+    },
+    {
+        "itemid": "露营灯",
+        "block": "1x3",
+        "img": "Icon_8.png",
+        "level": 4,
+        "info": "这是一个基础1x2物品，适用于新手教程"
+    },
+    {
+        "itemid": "动力电池",
+        "block": "3x4",
+        "img": "Icon_9.png",
+        "level": 6,
+        "info": "这是一个基础1x2物品，适用于新手教程"
+    },
+    {
+        "itemid": "浮力设备",
+        "block": "3x4",
+        "img": "Icon_10.png",
+        "level": 6,
+        "info": "这是一个基础1x2物品，适用于新手教程"
+    }
+]
