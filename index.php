@@ -1400,6 +1400,7 @@ html.dark-mode .moon-svg { display: none; }
                 <!--<a href="#" onclick="goToUpload(); return false;">压缩包上传</a>-->
                 <a href="#" onclick="goToNTwiki(); return false;">NTwiki</a>
                 <a href="#" onclick="goToVIP(); return false;">VIP用户</a>
+                <a href="#" onclick="goToGame(); return false;">van游戏</a>
             </div>
         </div>
         <div class="main">
@@ -2112,6 +2113,7 @@ async function doRegister() {
         function goToNTwiki() { window.location.href = '/NTwiki/'; }
         function goToVIP() { window.location.href = '/VIP/'; }
         function goToManagement() { window.location.href = '/Management/'; }
+        function goToGame() { window.location.href = '/GameTest/'; }
 
         function closeModal(id) {
             document.getElementById(id).style.display = 'none';
