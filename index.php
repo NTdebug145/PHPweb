@@ -26,6 +26,7 @@ define('GROUP_MSG_DIR', DATA_DIR . '/groups'); // 存放群消息文件的目录
 define('GROUP_AVATAR_DIR', DATA_DIR . '/group_avatars');
 define('BACKGROUND_DIR', DATA_DIR . '/backgrounds');   // 个人背景图目录
 define('GROUP_BACKGROUND_DIR', DATA_DIR . '/group_backgrounds'); // 群组背景图目录
+define('CAPTCHA_FONT', __DIR__ . '/D.ttf');
 
 define('USERS_LOCK_FILE', DATA_DIR . '/users.lock');
 
@@ -404,6 +405,10 @@ case 'getFriendStats':
     break;
 case 'getGroupStats':
     echo json_encode(handleGetGroupStats());
+    break;
+
+case 'captcha':
+    handleCaptcha();
     break;
 
             default:
@@ -1369,6 +1374,10 @@ html.dark-mode .moon-svg { display: none; }
             <h2>登录</h2>
             <input type="text" id="loginUsername" placeholder="用户名或数字ID">
             <input type="password" id="loginPassword" placeholder="密码">
+<div style="margin: 10px 0; display: flex; align-items: center;">
+    <input type="text" id="loginCaptcha" placeholder="验证码" style="flex: 1; margin-right: 5px;">
+    <img src="?action=captcha" id="loginCaptchaImg" onclick="this.src='?action=captcha&t='+Date.now()" style="height: 40px; cursor: pointer;" title="点击刷新">
+</div>
             <button onclick="doLogin()">登录</button>
             <div class="toggle" onclick="showRegister()">没有账号？立即注册</div>
         </div>
@@ -1377,6 +1386,10 @@ html.dark-mode .moon-svg { display: none; }
             <input type="text" id="regUsername" placeholder="用户名 [登录用]">
             <p><svg class="icon" style="width: 1em;height: 1em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="4567"><path d="M512 179.891892c-184.043243 0-332.108108 148.064865-332.108108 332.108108s148.064865 332.108108 332.108108 332.108108 332.108108-148.064865 332.108108-332.108108-148.064865-332.108108-332.108108-332.108108z m33.210811 545.210811c0 6.918919-5.535135 12.454054-12.454054 12.454054h-44.281081c-6.918919 0-12.454054-5.535135-12.454054-12.454054v-44.281081c0-6.918919 5.535135-12.454054 12.454054-12.454054h44.281081c6.918919 0 12.454054 5.535135 12.454054 12.454054v44.281081z m1.383784-121.772973c0 6.918919-5.535135 11.07027-12.454054 11.07027h-45.664865c-6.918919 0-11.07027-5.535135-12.454054-11.07027L470.486486 316.886486c0-6.918919 5.535135-12.454054 12.454055-12.454054h55.351351c6.918919 0 12.454054 5.535135 12.454054 12.454054l-4.151351 286.443244z" fill="currentColor" p-id="4568"></path></svg><font color="red"> 用户名不等于昵称！！！</font></p>
             <input type="password" id="regPassword" placeholder="密码">
+<div style="margin: 10px 0; display: flex; align-items: center;">
+    <input type="text" id="regCaptcha" placeholder="验证码" style="flex: 1; margin-right: 5px;">
+    <img src="?action=captcha" id="regCaptchaImg" onclick="this.src='?action=captcha&t='+Date.now()" style="height: 40px; cursor: pointer;" title="点击刷新">
+</div>
             <input type="file" id="regAvatar" accept="image/*">
             <button onclick="doRegister()">注册</button>
             <div class="toggle" onclick="showLogin()">已有账号？去登录</div>
@@ -2018,6 +2031,7 @@ async function doRegister() {
     try {
         const username = document.getElementById('regUsername').value.trim();
         const password = document.getElementById('regPassword').value.trim();
+        const captcha = document.getElementById('regCaptcha').value.trim(); // 使用 regCaptcha
         if (!username || !password) {
             alert('用户名和密码不能为空');
             return;
@@ -2051,6 +2065,7 @@ async function doRegister() {
         async function doLogin() {
             const usernameOrId = document.getElementById('loginUsername').value.trim();
             const password = document.getElementById('loginPassword').value.trim();
+            const captcha = document.getElementById('loginCaptcha').value.trim(); // 使用 loginCaptcha
             if (!usernameOrId || !password) {
                 alert('请输入用户名/ID和密码');
                 return;
@@ -2058,7 +2073,7 @@ async function doRegister() {
             const res = await fetch('?action=login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({ username: usernameOrId, password })
+                body: new URLSearchParams({ username: usernameOrId, password, captcha })
             });
             const data = await res.json();
             if (data.success) {
@@ -3101,7 +3116,15 @@ function safeUser($user) {
 
 // 处理注册
 function handleRegister() {
-    ob_clean(); // 清除之前的输出
+    ob_clean();
+
+    // 验证验证码
+    $captcha = strtolower(trim($_POST['captcha'] ?? ''));
+    if (!isset($_SESSION['captcha']) || $captcha !== $_SESSION['captcha']) {
+        return ['success' => false, 'error' => '验证码错误'];
+    }
+    unset($_SESSION['captcha']);
+
     $username = $_POST['username'] ?? '';
     $password = $_POST['password'] ?? '';
 
@@ -3147,6 +3170,13 @@ function handleRegister() {
 
 // 处理登录
 function handleLogin() {
+    $captcha = strtolower(trim($_POST['captcha'] ?? ''));
+    if (!isset($_SESSION['captcha']) || $captcha !== $_SESSION['captcha']) {
+        return ['success' => false, 'error' => '验证码错误'];
+    }
+    // 验证成功后清除验证码，防止重复使用
+    unset($_SESSION['captcha']);
+
     $usernameOrId = $_POST['username'] ?? '';
     $password = $_POST['password'] ?? '';
     
@@ -3163,6 +3193,7 @@ function handleLogin() {
     if ($hash === false || !password_verify($password, $hash)) {
         return ['success' => false, 'error' => '用户名/ID或密码错误'];
     }
+    unset($_SESSION['captcha']);
 
     session_regenerate_id(true);
     $_SESSION['user_id'] = $user['id'];
@@ -4504,6 +4535,123 @@ function getGroupMessageStats($groupId, $userId) {
         if ($msg['from'] == $userId) $mine++;
     }
     return ['total' => count($messages), 'mine' => $mine];
+}
+
+
+
+
+
+
+function handleCaptcha() {
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    $width = 160;
+    $height = 70;
+    $length = 4;
+
+    // 候选字符（排除易混淆的 0, O, 1, I）
+    $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    $captcha = '';
+    for ($i = 0; $i < $length; $i++) {
+        $captcha .= $chars[random_int(0, strlen($chars) - 1)];
+    }
+    $_SESSION['captcha'] = strtolower($captcha);
+
+    // 创建画布
+    $image = imagecreate($width, $height);
+
+    // 随机浅色背景
+    $bgR = random_int(180, 255);
+    $bgG = random_int(180, 255);
+    $bgB = random_int(180, 255);
+    $bgColor = imagecolorallocate($image, $bgR, $bgG, $bgB);
+    imagefill($image, 0, 0, $bgColor);
+
+    // 绘制干扰线条
+    for ($i = 0; $i < 6; $i++) {
+        $lineColor = imagecolorallocate($image,
+            random_int(100, 180),
+            random_int(100, 180),
+            random_int(100, 180)
+        );
+        imageline($image,
+            random_int(0, $width), random_int(0, $height),
+            random_int(0, $width), random_int(0, $height),
+            $lineColor
+        );
+    }
+
+    // 字体文件路径（需根据实际情况修改）
+    $fontFile = __DIR__ . '/D.ttf';
+
+    // 检查是否可以使用 TTF
+    $useTTF = function_exists('imagettftext') && file_exists($fontFile);
+
+    if ($useTTF) {
+        // ========== TTF 模式 ==========
+        $baseX = 20; // 起始X
+        $baseY = $height / 2; // 基线Y（imagettftext 的基线位置）
+        for ($i = 0; $i < $length; $i++) {
+            // 随机字体大小
+            $fontSize = random_int(24, 30);
+            // 随机角度（-15° ~ +15°）
+            $angle = random_int(-15, 15);
+            // 随机颜色（深色，确保对比度）
+            do {
+                $textR = random_int(0, 100);
+                $textG = random_int(0, 100);
+                $textB = random_int(0, 100);
+                $contrast = abs($textR - $bgR) + abs($textG - $bgG) + abs($textB - $bgB);
+            } while ($contrast < 200);
+            $textColor = imagecolorallocate($image, $textR, $textG, $textB);
+
+            // 随机水平位置
+            $x = $baseX + $i * 30 + random_int(-6, 6);
+            // 垂直位置微调
+            $y = $baseY + random_int(-6, 6);
+
+            // 获取字符的包围盒以调整垂直居中（可选，此处简单处理）
+            imagettftext($image, $fontSize, $angle, $x, $y, $textColor, $fontFile, $captcha[$i]);
+        }
+    } else {
+        // ========== 回退模式：内置字体（字体较小，仅作兼容） ==========
+        $baseX = 15;
+        $baseY = $height / 2 + 5; // 依然可能偏下，但总比没有好
+        for ($i = 0; $i < $length; $i++) {
+            $fontSize = 5; // 最大内置字体
+            do {
+                $textR = random_int(0, 120);
+                $textG = random_int(0, 120);
+                $textB = random_int(0, 120);
+                $contrast = abs($textR - $bgR) + abs($textG - $bgG) + abs($textB - $bgB);
+            } while ($contrast < 200);
+            $textColor = imagecolorallocate($image, $textR, $textG, $textB);
+            $x = $baseX + $i * 28 + random_int(-5, 5);
+            $y = $baseY + random_int(-8, 8);
+            imagestring($image, $fontSize, $x, $y, $captcha[$i], $textColor);
+        }
+        // 在图片上添加提示（可选）
+        $msg = "TTF not available";
+        $msgColor = imagecolorallocate($image, 255, 0, 0);
+        imagestring($image, 2, 5, 5, $msg, $msgColor);
+    }
+
+    // 添加噪点
+    for ($i = 0; $i < 80; $i++) {
+        $noiseColor = imagecolorallocate($image,
+            random_int(150, 255),
+            random_int(150, 255),
+            random_int(150, 255)
+        );
+        imagesetpixel($image, random_int(0, $width), random_int(0, $height), $noiseColor);
+    }
+
+    header('Content-Type: image/png');
+    imagepng($image);
+    imagedestroy($image);
+    exit;
 }
 
 ?>
