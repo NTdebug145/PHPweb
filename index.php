@@ -24,6 +24,8 @@ define('FILE_NAME_JSON', UPLOAD_DIR . '/FileName/FileN.json');
 define('GROUPS_FILE', DATA_DIR . '/groups.json');
 define('GROUP_MSG_DIR', DATA_DIR . '/groups'); // 存放群消息文件的目录
 define('GROUP_AVATAR_DIR', DATA_DIR . '/group_avatars');
+define('BACKGROUND_DIR', DATA_DIR . '/backgrounds');   // 个人背景图目录
+define('GROUP_BACKGROUND_DIR', DATA_DIR . '/group_backgrounds'); // 群组背景图目录
 
 define('USERS_LOCK_FILE', DATA_DIR . '/users.lock');
 
@@ -39,6 +41,12 @@ foreach ([DATA_DIR . '/FileName', IMG_DIR] as $dir) {
 }
 
 foreach ([DATA_DIR, AVATAR_DIR, UPLOAD_DIR, UPLOAD_DIR . '/FileName', TEMP_DIR] as $dir) {
+    if (!file_exists($dir)) {
+        mkdir($dir, 0755, true);
+    }
+}
+
+foreach ([BACKGROUND_DIR, GROUP_BACKGROUND_DIR] as $dir) {
     if (!file_exists($dir)) {
         mkdir($dir, 0755, true);
     }
@@ -383,6 +391,20 @@ if ($action) {
             case 'deleteAccount':
                 echo json_encode(handleDeleteAccount());
                 break;
+
+case 'uploadBackground':
+    echo json_encode(handleUploadBackground());
+    break;
+case 'updateGroup':
+    echo json_encode(handleUpdateGroup());
+    break;
+
+case 'getFriendStats':
+    echo json_encode(handleGetFriendStats());
+    break;
+case 'getGroupStats':
+    echo json_encode(handleGetGroupStats());
+    break;
 
             default:
                 echo json_encode(['error' => '无效操作']);
@@ -1400,7 +1422,7 @@ html.dark-mode .moon-svg { display: none; }
                 <!--<a href="#" onclick="goToUpload(); return false;">压缩包上传</a>-->
                 <a href="#" onclick="goToNTwiki(); return false;">NTwiki</a>
                 <a href="#" onclick="goToVIP(); return false;">VIP用户</a>
-                <a href="#" onclick="goToGame(); return false;">van游戏</a>
+                <!--<a href="#" onclick="goToGame(); return false;">van游戏</a>-->
             </div>
         </div>
         <div class="main">
@@ -2113,7 +2135,7 @@ async function doRegister() {
         function goToNTwiki() { window.location.href = '/NTwiki/'; }
         function goToVIP() { window.location.href = '/VIP/'; }
         function goToManagement() { window.location.href = '/Management/'; }
-        function goToGame() { window.location.href = '/GameTest/'; }
+        //function goToGame() { window.location.href = '/GameTest/'; }
 
         function closeModal(id) {
             document.getElementById(id).style.display = 'none';
@@ -4195,6 +4217,293 @@ function handleDeleteAccount() {
     session_destroy();
 
     return ['success' => true];
+}
+
+// ==================== 新增 API 函数 ====================
+
+/**
+ * 上传个人背景图
+ */
+function handleUploadBackground() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    if (!checkCSRF()) {
+        return ['success' => false, 'error' => 'CSRF令牌无效'];
+    }
+    if (!isset($_FILES['background'])) {
+        return ['success' => false, 'error' => '没有文件'];
+    }
+
+    $file = $_FILES['background'];
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        return ['success' => false, 'error' => '上传错误'];
+    }
+    if ($file['size'] > 5 * 1024 * 1024) { // 限制 5MB
+        return ['success' => false, 'error' => '图片不能超过5MB'];
+    }
+
+    $imageInfo = @getimagesize($file['tmp_name']);
+    if ($imageInfo === false) {
+        return ['success' => false, 'error' => '文件不是有效的图片'];
+    }
+
+    $allowedMime = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!in_array($imageInfo['mime'], $allowedMime)) {
+        return ['success' => false, 'error' => '只允许上传 JPG、PNG、GIF、WEBP 格式的图片'];
+    }
+
+    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    $filename = uniqid() . '.' . $ext;
+    $dest = BACKGROUND_DIR . '/' . $filename;
+
+    if (!move_uploaded_file($file['tmp_name'], $dest)) {
+        return ['success' => false, 'error' => '保存失败'];
+    }
+
+    // 更新用户数据中的 background 字段
+    $userId = $_SESSION['user_id'];
+    $users = getUsers();
+    $index = array_search($userId, array_column($users, 'id'));
+    if ($index === false) {
+        return ['success' => false, 'error' => '用户不存在'];
+    }
+
+    $users[$index]['background'] = 'data/backgrounds/' . $filename;
+    saveUsers($users);
+
+    return ['success' => true, 'path' => 'data/backgrounds/' . $filename];
+}
+
+/**
+ * 更新群组信息（名称、头像、背景图）
+ */
+function handleUpdateGroup() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    if (!checkCSRF()) {
+        return ['success' => false, 'error' => 'CSRF令牌无效'];
+    }
+
+    $groupId = $_POST['groupId'] ?? '';
+    if (!$groupId || !isValidId($groupId)) {
+        return ['success' => false, 'error' => '群ID格式错误'];
+    }
+
+    $groups = json_decode(file_get_contents(GROUPS_FILE), true) ?: [];
+    $groupIndex = null;
+    foreach ($groups as $i => $g) {
+        if ($g['id'] == $groupId) {
+            $groupIndex = $i;
+            break;
+        }
+    }
+    if ($groupIndex === null) {
+        return ['success' => false, 'error' => '群组不存在'];
+    }
+
+    $group = &$groups[$groupIndex];
+    // 验证当前用户是否为群主
+    if ($group['creator'] != $_SESSION['user_id']) {
+        return ['success' => false, 'error' => '只有群主可以修改群组信息'];
+    }
+
+    // 更新名称
+    if (isset($_POST['name']) && !empty($_POST['name'])) {
+        $group['name'] = trim($_POST['name']);
+    }
+
+    // 上传群头像
+    if (isset($_FILES['avatar']) && $_FILES['avatar']['error'] === UPLOAD_ERR_OK) {
+        $avatarResult = handleGroupAvatarUpload($_FILES['avatar']);
+        if ($avatarResult['success']) {
+            $group['avatar'] = $avatarResult['path'];
+        } else {
+            return $avatarResult;
+        }
+    }
+
+    // 上传群背景图
+    if (isset($_FILES['background']) && $_FILES['background']['error'] === UPLOAD_ERR_OK) {
+        $bgResult = handleGroupBackgroundUpload($_FILES['background']);
+        if ($bgResult['success']) {
+            $group['background'] = $bgResult['path'];
+        } else {
+            return $bgResult;
+        }
+    }
+
+    file_put_contents(GROUPS_FILE, json_encode($groups), LOCK_EX);
+    return ['success' => true];
+}
+
+/**
+ * 处理群背景图上传（复用群头像的验证逻辑，但保存到不同目录）
+ */
+function handleGroupBackgroundUpload($file) {
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        return ['success' => false, 'error' => '上传错误'];
+    }
+    if ($file['size'] > 5 * 1024 * 1024) { // 5MB
+        return ['success' => false, 'error' => '图片不能超过5MB'];
+    }
+    $finfo = finfo_open(FILEINFO_MIME_TYPE);
+    $mime = finfo_file($finfo, $file['tmp_name']);
+    finfo_close($finfo);
+    $allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!in_array($mime, $allowed)) {
+        return ['success' => false, 'error' => '只允许上传JPG、PNG、GIF、WEBP格式的图片'];
+    }
+    $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+    $filename = uniqid() . '.' . $ext;
+    $dest = GROUP_BACKGROUND_DIR . '/' . $filename;
+    if (!move_uploaded_file($file['tmp_name'], $dest)) {
+        return ['success' => false, 'error' => '保存失败'];
+    }
+    return ['success' => true, 'path' => 'data/group_backgrounds/' . $filename];
+}
+
+/**
+ * 获取与某好友的统计数据：成为好友天数、总消息数、我发送的消息数
+ */
+function handleGetFriendStats() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    $userId = $_SESSION['user_id'];
+    $friendId = $_GET['friendId'] ?? '';
+    if (!$friendId || !isValidId($friendId)) {
+        return ['success' => false, 'error' => '好友ID格式错误'];
+    }
+
+    // 获取关系信息
+    $relation = getFriendRelation($userId, $friendId);
+    if (!$relation) {
+        return ['success' => false, 'error' => '不是好友关系'];
+    }
+    $sinceDays = floor((time() - $relation['since']) / 86400);
+
+    // 获取消息统计
+    $stats = getMessageStats($userId, $friendId);
+    $totalMsgs = $stats['total'];
+    $myMsgs = $stats['mine'];
+
+    return [
+        'success' => true,
+        'since_days' => $sinceDays,
+        'total_messages' => $totalMsgs,
+        'my_messages' => $myMsgs
+    ];
+}
+
+/**
+ * 获取群组统计数据：群创建时间、我加入时间、总消息数、我发送的消息数
+ * 注意：我加入时间未记录，此处暂用群创建时间
+ */
+function handleGetGroupStats() {
+    if (!isset($_SESSION['user_id'])) {
+        return ['success' => false, 'error' => '未登录'];
+    }
+    $userId = $_SESSION['user_id'];
+    $groupId = $_GET['groupId'] ?? '';
+    if (!$groupId || !isValidId($groupId)) {
+        return ['success' => false, 'error' => '群ID格式错误'];
+    }
+
+    $group = getGroupInfo($groupId);
+    if (!$group || !in_array($userId, $group['members'])) {
+        return ['success' => false, 'error' => '您不是群成员'];
+    }
+
+    $created = $group['created'] ?? 0;
+    $joined = $created; // 暂用创建时间
+
+    // 获取群消息统计
+    $stats = getGroupMessageStats($groupId, $userId);
+    $totalMsgs = $stats['total'];
+    $myMsgs = $stats['mine'];
+
+    return [
+        'success' => true,
+        'created' => $created,
+        'joined' => $joined,
+        'total_messages' => $totalMsgs,
+        'my_messages' => $myMsgs
+    ];
+}
+
+/**
+ * 获取好友关系信息（辅助函数）
+ */
+function getFriendRelation($userId, $friendId) {
+    $friends = getFriends($userId);
+    foreach ($friends as $f) {
+        if ($f['id'] == $friendId && isset($f['status']) && $f['status'] == 'accepted') {
+            return $f;
+        }
+    }
+    return null;
+}
+
+/**
+ * 统计两人消息数量（需要读取消息文件）
+ */
+function getMessageStats($userId, $friendId) {
+    $dir = DATA_DIR . '/' . $userId;
+    $file = $dir . '/' . $friendId . '.json';
+    if (!file_exists($file)) {
+        return ['total' => 0, 'mine' => 0];
+    }
+    $content = file_get_contents($file);
+    if (empty($content)) {
+        return ['total' => 0, 'mine' => 0];
+    }
+
+    // 尝试新密钥解密
+    try {
+        $messages = decryptUserData($userId, $friendId, $content);
+    } catch (Exception $e) {
+        // 尝试旧密钥
+        try {
+            $messages = decryptUserDataLegacy($userId, $content);
+        } catch (Exception $e) {
+            // 尝试明文
+            $messages = json_decode($content, true) ?: [];
+        }
+    }
+
+    $mine = 0;
+    foreach ($messages as $msg) {
+        if ($msg['from'] == $userId) $mine++;
+    }
+    return ['total' => count($messages), 'mine' => $mine];
+}
+
+/**
+ * 获取群消息统计
+ */
+function getGroupMessageStats($groupId, $userId) {
+    $file = GROUP_MSG_DIR . '/' . $groupId . '.json';
+    if (!file_exists($file)) {
+        return ['total' => 0, 'mine' => 0];
+    }
+    $encrypted = file_get_contents($file);
+    if (empty($encrypted)) {
+        return ['total' => 0, 'mine' => 0];
+    }
+
+    try {
+        $messages = decryptGroupData($groupId, $encrypted);
+    } catch (Exception $e) {
+        $messages = [];
+    }
+
+    $mine = 0;
+    foreach ($messages as $msg) {
+        if ($msg['from'] == $userId) $mine++;
+    }
+    return ['total' => count($messages), 'mine' => $mine];
 }
 
 ?>
